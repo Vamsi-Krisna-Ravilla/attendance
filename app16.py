@@ -3,7 +3,7 @@ import pandas as pd
 
 import hashlib
 import openpyxl
-from openpyxl.styles import Font
+
 import io
 import numpy as np
 from datetime import datetime, timezone
@@ -332,8 +332,9 @@ def format_text_for_excel(value):
             return f"{num} /{den}"  # Add space before the slash
     return value
 
+# Rest of your code remains the same...
 def view_statistics_page():
-    """Page for viewing attendance statistics with enhanced download options"""
+    """Page for viewing attendance statistics with PDF download capability"""
     st.subheader("View Attendance Statistics")
     
     # First select course
@@ -390,10 +391,8 @@ def view_statistics_page():
                 
                 for col in combined_stats.columns:
                     if 'Attended/Conducted' in col:
-                        # Replace column header with A/C notation
-                        new_col = col.replace('Attended/Conducted', 'A/C')
                         column_config[col] = st.column_config.TextColumn(
-                            new_col,
+                            col,
                             width=150
                         )
                 
@@ -403,94 +402,47 @@ def view_statistics_page():
                     column_config=column_config,
                     use_container_width=True,
                     hide_index=True
-                    
                 )
                 
-                # Download options
-                # Download options with more explicit buttons
-                # Download options
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("📊 Download Excel"):
-                        # Create Excel file
-                        buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                            combined_stats.to_excel(writer, sheet_name='Attendance_Stats', index=False)
-                            
-                            # Format worksheet
-                            worksheet = writer.sheets['Attendance_Stats']
-                            
-                            # Add legend at the top
-                            worksheet.insert_rows(0)
-                            legend_cell = worksheet.cell(row=1, column=1)
-                            legend_cell.value = "A: Attended, C: Conducted"
-                            legend_cell.font = Font(italic=True)
-                            
-                            # Format cells
-                            for column in worksheet.columns:
-                                max_length = max(len(str(cell.value or '')) for cell in column)
-                                worksheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max_length + 2))
-                                
-                            # Add borders and alignment    
-                            thin_border = Border(left=Side(style='thin'), 
-                                            right=Side(style='thin'), 
-                                            top=Side(style='thin'), 
-                                            bottom=Side(style='thin'))
-                                            
-                            for row in worksheet.iter_rows(min_row=2):  # Start from second row due to legend
-                                for cell in row:
-                                    cell.border = thin_border
-                                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                # Download Report button
+                if st.button("Download Report"):
+                    filters = {
+                        "Course": selected_course,
+                        "Sections": ", ".join(selected_sections),
+                        "Date Range": f"{from_date} to {to_date}"
+                    }
+                    
+                    try:
+                        # Prepare data for PDF
+                        pdf_df = combined_stats.copy()
+                        # Remove unnecessary columns
+                        pdf_df = pdf_df.drop(['Student Name', 'Section'], axis=1, errors='ignore')
                         
-                        st.download_button(
-                            label="📥 Download Excel File",
-                            data=buffer.getvalue(),
-                            file_name=f"attendance_stats_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        # Generate PDF
+                        pdf_data = generate_statistics_pdf(
+                            df=pdf_df,
+                            title="Attendance Statistics Report",
+                            filters=filters
                         )
-
-                with col2:
-                    if st.button("📄 Download PDF"):
-                        try:
-                            # Prepare data for PDF
-                            pdf_df = combined_stats.copy()
-                            
-                            # Replace column headers with A/C notation
-                            pdf_df.columns = [col.replace('Attended/Conducted', 'A/C') for col in pdf_df.columns]
-                            
-                            # Add filters info
-                            filters = {
-                                "Course": selected_course,
-                                "Sections": ", ".join(selected_sections),
-                                "Date Range": f"{from_date} to {to_date}"
-                            }
-                            
-                            # Generate PDF
-                            pdf_data = generate_statistics_pdf(
-                                df=pdf_df,
-                                title="Attendance Statistics Report",
-                                filters=filters
+                        
+                        if pdf_data:
+                            st.download_button(
+                                label="📥 Download PDF Report",
+                                data=pdf_data,
+                                file_name=f"attendance_stats_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf"
                             )
-                            
-                            if pdf_data:
-                                st.download_button(
-                                    label="📥 Download PDF Report",
-                                    data=pdf_data,
-                                    file_name=f"attendance_stats_{datetime.now().strftime('%Y%m%d')}.pdf",
-                                    mime="application/pdf"
-                                )
-                            else:
-                                st.error("Error generating PDF report")
-                        except Exception as e:
-                            st.error(f"Error generating PDF report: {str(e)}")
+                        else:
+                            st.error("Error generating PDF report")
+                    except Exception as e:
+                        st.error(f"Error generating PDF report: {str(e)}")
             else:
-                st.info("No attendance records found for the selected criteria")
-                
-                
+                st.info("No attendance records found for the selected criteria")    
+    
                 
 def generate_statistics_pdf(df, title, filters=None):
     """
-    Generate a PDF report for attendance statistics with column header optimization
+    Generate a PDF report for attendance statistics with dark theme
     """
     html_template = """
     <!DOCTYPE html>
@@ -508,11 +460,13 @@ def generate_statistics_pdf(df, title, filters=None):
                 margin: 0;
                 padding: 20px;
             }
-            .legend {
+            .header {
                 text-align: center;
-                margin-bottom: 20px;
-                color: #888;
-                font-size: 12px;
+                margin-bottom: 30px;
+            }
+            .header img {
+                max-width: 200px;
+                height: auto;
             }
             .metrics {
                 display: flex;
@@ -533,30 +487,33 @@ def generate_statistics_pdf(df, title, filters=None):
                 font-size: 14px;
                 color: #888;
             }
+            .section-title {
+                font-size: 24px;
+                color: #ffffff;
+                margin: 20px 0;
+            }
             table {
                 width: 100%;
                 border-collapse: collapse;
                 background-color: #1a1a1a;
                 margin-top: 20px;
-                font-size: 10px;
             }
             th {
                 background-color: #333;
                 color: #fff;
-                padding: 8px;
+                padding: 12px;
                 text-align: left;
                 font-weight: normal;
+                font-size: 12px;
             }
             td {
-                padding: 8px;
+                padding: 12px;
                 border-top: 1px solid #333;
                 color: #fff;
+                font-size: 12px;
             }
             tr:nth-child(even) {
                 background-color: #222;
-            }
-            .warning-cell {
-                color: #ff4444;
             }
             .timestamp {
                 text-align: right;
@@ -564,33 +521,34 @@ def generate_statistics_pdf(df, title, filters=None):
                 color: #666;
                 margin-top: 20px;
             }
+            .warning-cell {
+                color: #ff4444;
+            }
         </style>
     </head>
     <body>
-        <div class="legend">
-            A: Attended, C: Conducted
-        </div>
-        
         <div class="metrics">
             <div class="metric">
-                <div class="metric-value">{{ metrics.total_students }}</div>
                 <div class="metric-label">Total Students</div>
+                <div class="metric-value">{{ metrics.total_students }}</div>
             </div>
             <div class="metric">
-                <div class="metric-value">{{ "%.2f"|format(metrics.avg_attendance) }}%</div>
                 <div class="metric-label">Average Attendance</div>
+                <div class="metric-value">{{ "%.2f"|format(metrics.avg_attendance) }}%</div>
             </div>
             <div class="metric">
-                <div class="metric-value">{{ metrics.below_75 }}</div>
                 <div class="metric-label">Students Below 75%</div>
+                <div class="metric-value">{{ metrics.below_75 }}</div>
             </div>
         </div>
 
+        <div class="section-title">Student-wise Statistics</div>
+        
         <table>
             <thead>
                 <tr>
                     {% for column in columns %}
-                    <th>{{ column | replace('(Attended/Conducted)', '(A/C)') }}</th>
+                    <th>{{ column }}</th>
                     {% endfor %}
                 </tr>
             </thead>
@@ -647,6 +605,7 @@ def generate_statistics_pdf(df, title, filters=None):
         'no-outline': None,
         'enable-local-file-access': None,
         'background': True,
+        # Dark theme settings
         'print-media-type': None,
         'no-background': None
     }
@@ -655,7 +614,6 @@ def generate_statistics_pdf(df, title, filters=None):
     pdf = pdfkit.from_string(html_content, False, options=pdf_options)
     
     return pdf
-
 
 
 def create_template_df(sheet_name):
@@ -1335,110 +1293,6 @@ def get_column_width(col_name, values):
 
 
 
-
-
-
-
-
-def get_all_faculty_workload(from_date=None, to_date=None):
-    """Get workload statistics for all faculty members with combined section handling"""
-    try:
-        df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
-        faculty_stats = []
-        
-        for _, faculty_row in df_faculty.iterrows():
-            faculty_name = faculty_row['Faculty Name']
-            workload_data = []
-            combined_classes = {}  # Track classes by date and period
-            
-            # Process each month column
-            for col in faculty_row.index:
-                if col not in ['Faculty Name', 'Password', 'Username']:
-                    entries = str(faculty_row[col]).split('\n') if pd.notna(faculty_row[col]) else []
-                    
-                    for entry in entries:
-                        if entry.strip():
-                            try:
-                                parts = entry.strip().split('_')
-                                if len(parts) >= 5:
-                                    date_str = parts[0]
-                                    time_str = parts[1]
-                                    period = parts[2]
-                                    subject = parts[3]
-                                    section = parts[4]
-                                    
-                                    # Convert date for filtering
-                                    date_obj = pd.to_datetime(date_str, format='%d/%m/%Y')
-                                    
-                                    # Apply date filter if provided
-                                    if from_date and to_date:
-                                        if not (pd.to_datetime(from_date) <= date_obj <= pd.to_datetime(to_date)):
-                                            continue
-                                    
-                                    # Create unique key for date-period combination
-                                    date_period_key = f"{date_str}_{period}"
-                                    
-                                    # Track combined sections
-                                    if date_period_key not in combined_classes:
-                                        combined_classes[date_period_key] = {
-                                            'sections': [],
-                                            'time': time_str,
-                                            'subject': subject
-                                        }
-                                    combined_classes[date_period_key]['sections'].append(section)
-                                    
-                            except Exception:
-                                continue
-            
-            # Process combined classes into workload data
-            for date_period_key, class_info in combined_classes.items():
-                date_str, period = date_period_key.split('_')
-                num_sections = len(class_info['sections'])
-                
-                # Create one entry per section with distributed workload
-                for section in class_info['sections']:
-                    workload_data.append({
-                        'Date': date_str,
-                        'Time': class_info['time'],
-                        'Period': period,
-                        'Subject': class_info['subject'],
-                        'Section': section,
-                        'Combined Sections': ', '.join(class_info['sections']),
-                        'Workload': 1/num_sections  # Distribute workload among sections
-                    })
-            
-            # Calculate statistics for this faculty
-            if workload_data:
-                df_workload = pd.DataFrame(workload_data)
-                unique_days = len(df_workload['Date'].unique())
-                unique_subjects = len(df_workload['Subject'].unique())
-                unique_sections = len(df_workload['Section'].unique())
-                total_classes = len(combined_classes)  # Count unique date-period combinations
-                actual_workload = df_workload['Workload'].sum()  # Total distributed workload
-                
-                # Get subject and section distribution with workload
-                subject_dist = df_workload.groupby('Subject')['Workload'].sum().round(1).to_dict()
-                section_dist = df_workload.groupby('Section')['Workload'].sum().round(1).to_dict()
-                
-                faculty_stats.append({
-                    'Faculty Name': faculty_name,
-                    'Total Classes': total_classes,
-                    'Actual Workload': actual_workload,
-                    'Days Engaged': unique_days,
-                    'Daily Average': round(actual_workload / max(unique_days, 1), 2),
-                    'Unique Subjects': unique_subjects,
-                    'Unique Sections': unique_sections,
-                    'Subject Distribution': subject_dist,
-                    'Section Distribution': section_dist,
-                    'Detailed Records': df_workload
-                })
-        
-        return faculty_stats
-    except Exception as e:
-        st.error(f"Error calculating faculty workload: {str(e)}")
-        return []
-
-
 def admin_page():
     """Updated admin page with course filtering"""
     st.title("Admin Dashboard")
@@ -1608,7 +1462,6 @@ def admin_page():
             st.rerun()
 
 
-
 def show_data_editor(sheet, course_filter='All'):
     """Show the data editor component with improved layout and course filtering"""
     try:
@@ -1761,44 +1614,265 @@ def show_bulk_upload(sheet):
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
 
+# Get all faculty workload
+def get_all_faculty_workload(from_date=None, to_date=None):
+    """Get workload statistics for all faculty members"""
+    try:
+        df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
+        faculty_stats = []
+        
+        for _, faculty_row in df_faculty.iterrows():
+            faculty_name = faculty_row['Faculty Name']
+            workload_data = []
+            
+            # Process each month column
+            for col in faculty_row.index:
+                if col not in ['Faculty Name', 'Username', 'Password']:
+                    entries = str(faculty_row[col]).split('\n') if pd.notna(faculty_row[col]) else []
+                    
+                    for entry in entries:
+                        if pd.notna(entry) and entry.strip():
+                            try:
+                                parts = entry.strip().split('_')
+                                if len(parts) >= 6:  # Ensure we have all required parts including lesson plan
+                                    date_str = parts[0]
+                                    time_str = parts[1]
+                                    period = parts[2]
+                                    subject = parts[3]
+                                    section = parts[4]
+                                    lesson_plan = '_'.join(parts[5:])  # Join remaining parts as lesson plan
+                                    
+                                    date_obj = pd.to_datetime(date_str, format='%d/%m/%Y')
+                                    
+                                    # Apply date filter if provided
+                                    if from_date and to_date:
+                                        if not (pd.to_datetime(from_date) <= date_obj <= pd.to_datetime(to_date)):
+                                            continue
+                                    
+                                    workload_data.append({
+                                        'Date': date_str,
+                                        'Time': time_str,
+                                        'Period': period,
+                                        'Subject': subject,
+                                        'Section': section,
+                                        'Lesson Plan': lesson_plan
+                                    })
+                            except Exception as e:
+                                continue
+            
+            # Calculate statistics for this faculty
+            if workload_data:
+                df_workload = pd.DataFrame(workload_data)
+                unique_days = len(df_workload['Date'].unique())
+                unique_subjects = len(df_workload['Subject'].unique())
+                unique_sections = len(df_workload['Section'].unique())
+                total_classes = len(workload_data)
+                
+                # Get subject and section distribution
+                subject_dist = df_workload['Subject'].value_counts().to_dict()
+                section_dist = df_workload['Section'].value_counts().to_dict()
+                
+                faculty_stats.append({
+                    'Faculty Name': faculty_name,
+                    'Total Classes': total_classes,
+                    'Days Engaged': unique_days,
+                    'Daily Average': round(total_classes / max(unique_days, 1), 2),
+                    'Unique Subjects': unique_subjects,
+                    'Unique Sections': unique_sections,
+                    'Subject Distribution': subject_dist,
+                    'Section Distribution': section_dist,
+                    'Detailed Records': df_workload
+                })
+        
+        return faculty_stats
+    except Exception as e:
+        st.error(f"Error calculating faculty workload: {str(e)}")
+        return []
+
+def get_faculty_workload(username, include_lesson_plans=True):
+    """Calculate faculty workload and organize by months, with lesson plans"""
+    try:
+        # Set timezone to IST
+        ist = pytz.timezone('Asia/Kolkata')
+        
+        # Get faculty sheet data
+        df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
+        
+        # Get faculty name for workload lookup
+        user_mask = df_faculty['Username'] == username
+        if not user_mask.any():
+            return 0, pd.DataFrame()
+            
+        workload_data = []
+        
+        # Process each month column
+        for col in df_faculty.columns:
+            if col not in ['Faculty Name', 'Username', 'Password']:
+                # Get entries for this month
+                entries = str(df_faculty.loc[user_mask, col].iloc[0]).split('\n') if pd.notna(df_faculty.loc[user_mask, col].iloc[0]) else []
+                
+                for entry in entries:
+                    if pd.notna(entry) and entry.strip():
+                        try:
+                            parts = entry.strip().split('_')
+                            if len(parts) >= 6:  # Ensure we have all required parts including lesson plan
+                                date_str = parts[0]
+                                time_str = parts[1]
+                                period = parts[2]
+                                subject = parts[3]
+                                section = parts[4]
+                                lesson_plan = '_'.join(parts[5:])  # Join remaining parts as lesson plan
+                                
+                                # Convert date for filtering
+                                date_obj = pd.to_datetime(date_str, format='%d/%m/%Y')
+                                
+                                # Check date range if provided
+                                if 'from_date' in st.session_state and 'to_date' in st.session_state:
+                                    from_date = pd.to_datetime(st.session_state.from_date)
+                                    to_date = pd.to_datetime(st.session_state.to_date)
+                                    if not (from_date <= date_obj <= to_date + pd.Timedelta(days=1)):
+                                        continue
+                                
+                                entry_data = {
+                                    'Date': date_str,
+                                    'Time': time_str,
+                                    'Period': period,
+                                    'Subject': subject,
+                                    'Section': section,
+                                    'Lesson Plan': lesson_plan
+                                }
+                                workload_data.append(entry_data)
+                        except Exception as e:
+                            st.error(f"Error processing entry: {entry}")
+                            continue
+        
+        if workload_data:
+            # Convert to DataFrame and add Month column
+            df_workload = pd.DataFrame(workload_data)
+            df_workload['DateObj'] = pd.to_datetime(df_workload['Date'], format='%d/%m/%Y')
+            df_workload['Month'] = df_workload['DateObj'].dt.strftime('%B %Y')
+            
+            # Sort by date
+            df_workload = df_workload.sort_values('DateObj', ascending=False)
+            
+            # Remove DateObj column
+            df_workload = df_workload.drop('DateObj', axis=1)
+            
+            return len(df_workload), df_workload
+            
+        return 0, pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"Error calculating workload: {str(e)}")
+        return 0, pd.DataFrame()
+
+def workload_analysis_page():
+    """Page for viewing faculty workload with lesson plans"""
+    st.subheader("My Workload Analysis")
+    
+    # Date range selection
+    col1, col2 = st.columns(2)
+    with col1:
+        st.session_state.from_date = st.date_input(
+            "From Date",
+            datetime.now().replace(day=1),
+            format="YYYY/MM/DD"
+        )
+    with col2:
+        st.session_state.to_date = st.date_input(
+            "To Date",
+            datetime.now(),
+            format="YYYY/MM/DD"
+        )
+    
+    # First select course to filter the view
+    courses = get_courses(for_attendance=True)
+    selected_course = st.selectbox("Select Course", options=['All'] + courses)
+    
+    # Get workload data
+    total_periods, workload_df = get_faculty_workload(st.session_state.username)
+    
+    if not workload_df.empty:
+        # Filter by selected course if not 'All'
+        if selected_course != 'All':
+            workload_df = workload_df[workload_df['Section'].str.startswith(selected_course)]
+        
+        # Only proceed if there's data after filtering
+        if not workload_df.empty:
+            # Summary metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Classes", len(workload_df))
+            with col2:
+                unique_days = workload_df['Date'].nunique()
+                st.metric("Days Engaged", unique_days)
+            with col3:
+                avg_classes = len(workload_df) / max(unique_days, 1)
+                st.metric("Daily Average", f"{avg_classes:.1f}")
+            
+            # Show section and subject breakdown
+            st.subheader("Teaching Distribution")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("##### Subject-wise Classes")
+                subject_counts = workload_df['Subject'].value_counts().reset_index()
+                subject_counts.columns = ['Subject', 'Classes']
+                st.dataframe(subject_counts, hide_index=True)
+                
+            with col2:
+                st.write("##### Section-wise Classes")
+                section_counts = workload_df['Section'].value_counts().reset_index()
+                section_counts.columns = ['Section', 'Classes']
+                st.dataframe(section_counts, hide_index=True)
+            
+            # Detailed records grouped by month
+            st.subheader("Detailed Class Records")
+            workload_df['Month'] = pd.to_datetime(workload_df['Date'], format='%d/%m/%Y').dt.strftime('%B %Y')
+            
+            for month in sorted(workload_df['Month'].unique(), reverse=True):
+                with st.expander(f"### {month}"):
+                    month_data = workload_df[workload_df['Month'] == month].copy()
+                    month_data = month_data.drop('Month', axis=1)
+                    st.dataframe(
+                        month_data,
+                        column_config={
+                            'Date': st.column_config.TextColumn('Date', width=100),
+                            'Time': st.column_config.TextColumn('Time', width=100),
+                            'Period': st.column_config.TextColumn('Period', width=80),
+                            'Section': st.column_config.TextColumn('Section', width=150),
+                            'Subject': st.column_config.TextColumn('Subject', width=150),
+                            'Lesson Plan': st.column_config.TextColumn('Lesson Plan', width=300)
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                    
+                    # Download option for monthly data
+                    csv = month_data.to_csv(index=False)
+                    st.download_button(
+                        label=f"Download {month} Records",
+                        data=csv,
+                        file_name=f"workload_{month}_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+        else:
+            st.info(f"No classes found for {selected_course}")
+    else:
+        st.info("No classes recorded in the selected date range")
 
 # Update the display code in show_faculty_workload_admin()
 def show_faculty_workload_admin():
     """Enhanced display function for admin view with additional analytics"""
     st.subheader("Faculty Workload Overview")
     
-    # Classes Section with Date Filters
-    st.write("### Class Schedule")
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_date = st.date_input(
-            "Select Date",
-            datetime.now(),
-            key="class_schedule_date"
-        )
-    with col2:
-        view_type = st.selectbox(
-            "View Type",
-            ["Single Day", "Date Range"],
-            key="class_view_type"
-        )
-    
-    if view_type == "Date Range":
-        end_date = st.date_input(
-            "End Date",
-            selected_date,
-            key="class_schedule_end_date"
-        )
-    else:
-        end_date = selected_date
+    # Today's Classes Section
+    st.write("### Today's Classes")
+    current_date = datetime.now().strftime('%d/%m/%Y')
     
     try:
         df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
-        classes_data = []
-        
-        # Convert dates to string format for comparison
-        start_date_str = selected_date.strftime('%d/%m/%Y')
-        end_date_str = end_date.strftime('%d/%m/%Y')
+        today_classes = []
         
         for _, faculty_row in df_faculty.iterrows():
             faculty_name = faculty_row['Faculty Name']
@@ -1809,44 +1883,25 @@ def show_faculty_workload_admin():
                         if pd.notna(entry) and entry.strip():
                             try:
                                 parts = entry.strip().split('_')
-                                if len(parts) >= 6:
-                                    entry_date = parts[0]
-                                    # Check if date is within selected range
-                                    if start_date_str <= entry_date <= end_date_str:
-                                        classes_data.append({
-                                            'Date': entry_date,
-                                            'Time': parts[1],
-                                            'Period': parts[2],
-                                            'Faculty': faculty_name,
-                                            'Subject': parts[3],
-                                            'Section': parts[4],
-                                            'Status': 'Completed'
-                                        })
+                                if len(parts) >= 6 and parts[0] == current_date:
+                                    today_classes.append({
+                                        'Time': parts[1],
+                                        'Period': parts[2],
+                                        'Faculty': faculty_name,
+                                        'Subject': parts[3],
+                                        'Section': parts[4],
+                                        'Status': 'Completed'
+                                    })
                             except Exception:
                                 continue
         
-        if classes_data:
-            df_classes = pd.DataFrame(classes_data)
-            df_classes = df_classes.sort_values(['Date', 'Time', 'Period'])
-            
-            if view_type == "Date Range":
-                st.write(f"### Classes from {start_date_str} to {end_date_str}")
-            else:
-                st.write(f"### Classes on {start_date_str}")
-                
-            # Add summary metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Classes", len(df_classes))
-            with col2:
-                st.metric("Faculty Engaged", df_classes['Faculty'].nunique())
-            with col3:
-                st.metric("Sections Covered", df_classes['Section'].nunique())
+        if today_classes:
+            df_today = pd.DataFrame(today_classes)
+            df_today = df_today.sort_values(['Time', 'Period'])
             
             st.dataframe(
-                df_classes,
+                df_today,
                 column_config={
-                    'Date': st.column_config.TextColumn('Date', width=100),
                     'Time': st.column_config.TextColumn('Time', width=80),
                     'Period': st.column_config.TextColumn('Period', width=70),
                     'Faculty': st.column_config.TextColumn('Faculty', width=150),
@@ -1861,62 +1916,13 @@ def show_faculty_workload_admin():
                 hide_index=True,
                 use_container_width=True
             )
-            
-            # Download option for filtered data
-            if st.button("Download Schedule"):
-                csv = df_classes.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV",
-                    data=csv,
-                    file_name=f"class_schedule_{start_date_str}_to_{end_date_str}.csv",
-                    mime="text/csv"
-                )
-
-            # Add Missing Attendance Analysis section
-            st.write("### Missing Attendance Analysis")
-            missing_data, all_sections = analyze_missing_attendance(start_date_str, df_classes)
-            
-            if missing_data:
-                st.warning("⚠️ The following sections have not had attendance marked:")
-                
-                for period_data in missing_data:
-                    with st.expander(f"Period {period_data['Period']}"):
-                        # Create metrics for the period
-                        total_missing = len(period_data['Missing Sections'])
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Missing Sections", total_missing)
-                        
-                        with col2:
-                            coverage = ((len(all_sections) - total_missing) / len(all_sections)) * 100
-                            st.metric("Attendance Coverage", f"{coverage:.1f}%")
-                        
-                        # Display missing sections in a organized way
-                        st.write("##### Sections without Attendance:")
-                        for section in period_data['Missing Sections']:
-                            st.markdown(f"""
-                                <div style='background: #FF575720; 
-                                          padding: 8px 15px; 
-                                          border-radius: 5px; 
-                                          border-left: 4px solid #FF5757;
-                                          margin: 5px 0;'>
-                                    {section}
-                                </div>
-                            """, unsafe_allow_html=True)
-            else:
-                st.success("✅ All sections have attendance marked for all periods!")
-                
         else:
-            if view_type == "Date Range":
-                st.info(f"No classes recorded between {start_date_str} and {end_date_str}")
-            else:
-                st.info(f"No classes recorded on {start_date_str}")
+            st.info("No classes recorded for today yet")
             
     except Exception as e:
-        st.error(f"Error loading class schedule: {str(e)}")
+        st.error(f"Error loading today's classes: {str(e)}")
     
-    # Historical Analysis section
+    # Date range selection
     st.write("### Historical Analysis")
     col1, col2 = st.columns(2)
     with col1:
@@ -1997,6 +2003,8 @@ def show_faculty_workload_admin():
                     })
                 
                 df_performance = pd.DataFrame(performance_data)
+                
+                # Sort by total classes descending
                 df_performance = df_performance.sort_values('Total Classes', ascending=False)
                 
                 st.dataframe(
@@ -2122,146 +2130,6 @@ def show_faculty_workload_admin():
         st.error(f"Error loading faculty workload: {str(e)}")
 
 
-def analyze_missing_attendance(selected_date, df_classes):
-    """Analyze which sections are missing attendance for each period"""
-    try:
-        # Get all merged sections from Students sheet
-        df_students = pd.read_excel('attendance.xlsx', sheet_name='Students')
-        all_sections = df_students['Merged Section'].unique()
-        
-        # Get all periods
-        periods = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
-        
-        # Create record of covered sections per period
-        covered_sections = {period: set() for period in periods}
-        
-        # Record sections that have attendance marked
-        for _, row in df_classes.iterrows():
-            covered_sections[row['Period']].add(row['Section'])
-        
-        # Find missing sections for each period
-        missing_data = []
-        for period in periods:
-            missing = set(all_sections) - covered_sections[period]
-            if missing:
-                missing_data.append({
-                    'Period': period,
-                    'Missing Sections': sorted(list(missing))
-                })
-        
-        return missing_data, all_sections
-    except Exception as e:
-        st.error(f"Error analyzing missing attendance: {str(e)}")
-        return [], []
-
-
-def get_faculty_workload(username, include_lesson_plans=True):
-    """Calculate faculty workload with combined section handling and precise date filtering"""
-    try:
-        # Set timezone to IST
-        ist = pytz.timezone('Asia/Kolkata')
-        
-        # Get faculty sheet data
-        df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
-        
-        # Get faculty name for workload lookup
-        user_mask = df_faculty['Username'] == username
-        if not user_mask.any():
-            return 0, pd.DataFrame()
-            
-        workload_data = []
-        combined_classes = {}  # Track classes by date and period
-        
-        # Process each month column
-        for col in df_faculty.columns:
-            if col not in ['Faculty Name', 'Username', 'Password']:
-                entries = str(df_faculty.loc[user_mask, col].iloc[0]).split('\n') if pd.notna(df_faculty.loc[user_mask, col].iloc[0]) else []
-                
-                for entry in entries:
-                    if pd.notna(entry) and entry.strip():
-                        try:
-                            parts = entry.strip().split('_')
-                            if len(parts) >= 6:
-                                date_str = parts[0]
-                                time_str = parts[1]
-                                period = parts[2]
-                                subject = parts[3]
-                                section = parts[4]
-                                lesson_plan = '_'.join(parts[5:]) if include_lesson_plans else ''
-                                
-                                # Convert date for filtering with exact date match
-                                date_obj = datetime.strptime(date_str, '%d/%m/%Y').date()
-                                
-                                # Check date range if provided
-                                if 'from_date' in st.session_state and 'to_date' in st.session_state:
-                                    from_date = st.session_state.from_date.date() if isinstance(st.session_state.from_date, datetime) else st.session_state.from_date
-                                    to_date = st.session_state.to_date.date() if isinstance(st.session_state.to_date, datetime) else st.session_state.to_date
-                                    
-                                    # Use inclusive range comparison
-                                    if not (from_date <= date_obj <= to_date):
-                                        continue
-                                
-                                # Create unique key for date-period combination
-                                date_period_key = f"{date_str}_{period}"
-                                
-                                # Initialize or update combined class tracking
-                                if date_period_key not in combined_classes:
-                                    combined_classes[date_period_key] = {
-                                        'sections': [],
-                                        'time': time_str,
-                                        'subject': subject,
-                                        'lesson_plan': lesson_plan
-                                    }
-                                
-                                # Add section to the combination
-                                combined_classes[date_period_key]['sections'].append(section)
-                                
-                        except Exception as e:
-                            st.error(f"Error processing entry: {entry}")
-                            continue
-        
-        # Process combined classes into workload data
-        for date_period_key, class_info in combined_classes.items():
-            date_str, period = date_period_key.split('_')
-            num_sections = len(class_info['sections'])
-            
-            # Create one entry per section with distributed workload
-            for section in class_info['sections']:
-                entry_data = {
-                    'Date': date_str,
-                    'Time': class_info['time'],
-                    'Period': period,
-                    'Subject': class_info['subject'],
-                    'Section': section,
-                    'Combined Sections': ', '.join(class_info['sections']),
-                    'Workload': 1/num_sections  # Distribute workload among sections
-                }
-                if include_lesson_plans:
-                    entry_data['Lesson Plan'] = class_info['lesson_plan']
-                workload_data.append(entry_data)
-        
-        if workload_data:
-            # Convert to DataFrame and add Month column
-            df_workload = pd.DataFrame(workload_data)
-            df_workload['DateObj'] = pd.to_datetime(df_workload['Date'], format='%d/%m/%Y')
-            df_workload['Month'] = df_workload['DateObj'].dt.strftime('%b%Y')
-            
-            # Calculate total workload (counting combined sections as one class)
-            total_workload = len(combined_classes)  # Each unique date-period combination counts as one class
-            
-            # Sort by date and remove DateObj column
-            df_workload = df_workload.sort_values('DateObj', ascending=False)
-            df_workload = df_workload.drop('DateObj', axis=1)
-            
-            return total_workload, df_workload
-            
-        return 0, pd.DataFrame()
-        
-    except Exception as e:
-        st.error(f"Error calculating workload: {str(e)}")
-        return 0, pd.DataFrame()
-
-
 def get_faculty_id(faculty_name):
     """Extract RVIT ID from faculty name"""
     if '(' in faculty_name and ')' in faculty_name:
@@ -2272,110 +2140,17 @@ def get_faculty_id(faculty_name):
 
 
 
-def workload_analysis_page():
-    """Page for viewing faculty workload with unified sheet structure and accurate workload distribution"""
-    st.subheader("My Workload Analysis")
-    
-    # Date range selection
-    col1, col2 = st.columns(2)
-    with col1:
-        st.session_state.from_date = st.date_input(
-            "From Date",
-            datetime.now().replace(day=1),
-            format="YYYY/MM/DD"
-        )
-    with col2:
-        st.session_state.to_date = st.date_input(
-            "To Date",
-            datetime.now(),
-            format="YYYY/MM/DD"
-        )
-    
-    # Course filter
-    courses = get_courses(for_attendance=True)
-    selected_course = st.selectbox("Select Course", options=['All'] + courses)
-    
-    # Get workload data
-    total_workload, workload_df = get_faculty_workload(st.session_state.username)
-    
-    if not workload_df.empty:
-        # Filter by selected course if not 'All'
-        if selected_course != 'All':
-            workload_df = workload_df[workload_df['Section'].str.startswith(selected_course)]
-        
-        if not workload_df.empty:
-            # Summary metrics using actual workload
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                total_actual_classes = workload_df['Workload'].sum()
-                st.metric("Total Classes", f"{total_actual_classes:.1f}")
-            with col2:
-                unique_days = workload_df['Date'].nunique()
-                st.metric("Days Engaged", unique_days)
-            with col3:
-                avg_classes = total_actual_classes / max(unique_days, 1)
-                st.metric("Daily Average", f"{avg_classes:.1f}")
-            
-            # Show distribution with adjusted workload
-            st.subheader("Teaching Distribution")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("##### Subject-wise Classes")
-                # Aggregate workload by subject
-                subject_counts = workload_df.groupby('Subject')['Workload'].sum().reset_index()
-                subject_counts.columns = ['Subject', 'Classes']
-                subject_counts = subject_counts.sort_values('Classes', ascending=False)
-                # Round to 1 decimal place
-                subject_counts['Classes'] = subject_counts['Classes'].round(1)
-                st.dataframe(subject_counts, hide_index=True)
-                
-            with col2:
-                st.write("##### Section-wise Classes")
-                # Aggregate workload by section
-                section_counts = workload_df.groupby('Section')['Workload'].sum().reset_index()
-                section_counts.columns = ['Section', 'Classes']
-                section_counts = section_counts.sort_values('Classes', ascending=False)
-                # Round to 1 decimal place
-                section_counts['Classes'] = section_counts['Classes'].round(1)
-                st.dataframe(section_counts, hide_index=True)
-            
-            # Detailed records grouped by month with combined sections info
-            st.subheader("Detailed Class Records")
-            workload_df['Month'] = pd.to_datetime(workload_df['Date'], format='%d/%m/%Y').dt.strftime('%B %Y')
-            
-            for month in sorted(workload_df['Month'].unique(), reverse=True):
-                with st.expander(f"### {month}"):
-                    month_data = workload_df[workload_df['Month'] == month].copy()
-                    month_data = month_data.drop('Month', axis=1)
-                    st.dataframe(
-                        month_data,
-                        column_config={
-                            'Date': st.column_config.TextColumn('Date', width=100),
-                            'Time': st.column_config.TextColumn('Time', width=100),
-                            'Period': st.column_config.TextColumn('Period', width=80),
-                            'Section': st.column_config.TextColumn('Section', width=150),
-                            'Subject': st.column_config.TextColumn('Subject', width=150),
-                            'Combined Sections': st.column_config.TextColumn('Combined Sections', width=200),
-                            'Workload': st.column_config.NumberColumn('Workload', format="%.1f", width=100),
-                            'Lesson Plan': st.column_config.TextColumn('Lesson Plan', width=300)
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                    
-                    # Download option for monthly data
-                    csv = month_data.to_csv(index=False)
-                    st.download_button(
-                        label=f"Download {month} Records",
-                        data=csv,
-                        file_name=f"workload_{month}_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
-                    )
-        else:
-            st.info(f"No classes found for {selected_course}")
-    else:
-        st.info("No classes recorded in the selected date range")
+# Continuing the faculty_page() function from where it left off...
+
+    # Logout button
+    with st.sidebar:
+        st.markdown("<br>" * 5, unsafe_allow_html=True)
+        if st.button("Logout", key="logout_button", type="primary", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
+
 
 
 def reset_password():
@@ -2627,7 +2402,7 @@ def mark_attendance_page():
 
             # Add lesson plan input
             lesson_plan = st.text_area(
-                "Enter Lesson Plan/Topic Name (Required)",
+                "Enter Lesson Plan (Required)",
                 help="Please enter topic covered in this class",
                 key="lesson_plan",
                 height=100
@@ -2824,150 +2599,8 @@ def reset_username():
 
 
 
-def show_class_schedule_page():
-    """Display class schedule and missing attendance analysis"""
-    st.subheader("Class Schedule")
-    
-    # Classes Section with Date Filters
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_date = st.date_input(
-            "Select Date",
-            datetime.now(),
-            key="class_schedule_date"
-        )
-    with col2:
-        view_type = st.selectbox(
-            "View Type",
-            ["Single Day", "Date Range"],
-            key="class_view_type"
-        )
-    
-    if view_type == "Date Range":
-        end_date = st.date_input(
-            "End Date",
-            selected_date,
-            key="class_schedule_end_date"
-        )
-    else:
-        end_date = selected_date
-    
-    try:
-        df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
-        classes_data = []
-        
-        # Convert dates to string format for comparison
-        start_date_str = selected_date.strftime('%d/%m/%Y')
-        end_date_str = end_date.strftime('%d/%m/%Y')
-        
-        for _, faculty_row in df_faculty.iterrows():
-            faculty_name = faculty_row['Faculty Name']
-            for col in faculty_row.index:
-                if col not in ['Faculty Name', 'Username', 'Password']:
-                    entries = str(faculty_row[col]).split('\n') if pd.notna(faculty_row[col]) else []
-                    for entry in entries:
-                        if pd.notna(entry) and entry.strip():
-                            try:
-                                parts = entry.strip().split('_')
-                                if len(parts) >= 6:
-                                    entry_date = parts[0]
-                                    # Check if date is within selected range
-                                    if start_date_str <= entry_date <= end_date_str:
-                                        classes_data.append({
-                                            'Date': entry_date,
-                                            'Time': parts[1],
-                                            'Period': parts[2],
-                                            'Faculty': faculty_name,
-                                            'Subject': parts[3],
-                                            'Section': parts[4],
-                                            'Status': 'Completed'
-                                        })
-                            except Exception:
-                                continue
-        
-        if classes_data:
-            df_classes = pd.DataFrame(classes_data)
-            df_classes = df_classes.sort_values(['Date', 'Time', 'Period'])
-            
-            if view_type == "Date Range":
-                st.write(f"### Classes from {start_date_str} to {end_date_str}")
-            else:
-                st.write(f"### Classes on {start_date_str}")
-                
-            # Add summary metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Classes", len(df_classes))
-            with col2:
-                st.metric("Faculty Engaged", df_classes['Faculty'].nunique())
-            with col3:
-                st.metric("Sections Covered", df_classes['Section'].nunique())
-            
-            st.dataframe(
-                df_classes,
-                column_config={
-                    'Date': st.column_config.TextColumn('Date', width=100),
-                    'Time': st.column_config.TextColumn('Time', width=80),
-                    'Period': st.column_config.TextColumn('Period', width=70),
-                    'Faculty': st.column_config.TextColumn('Faculty', width=150),
-                    'Subject': st.column_config.TextColumn('Subject', width=120),
-                    'Section': st.column_config.TextColumn('Section', width=120),
-                    'Status': st.column_config.TextColumn(
-                        'Status',
-                        width=100,
-                        help="Shows if attendance has been marked"
-                    )
-                },
-                hide_index=True,
-                use_container_width=True
-            )
-            
-            # Add Missing Attendance Analysis section
-            st.write("### Missing Attendance Analysis")
-            missing_data, all_sections = analyze_missing_attendance(start_date_str, df_classes)
-            
-            if missing_data:
-                st.warning("⚠️ The following sections have not had attendance marked:")
-                
-                for period_data in missing_data:
-                    with st.expander(f"Period {period_data['Period']}"):
-                        # Create metrics for the period
-                        total_missing = len(period_data['Missing Sections'])
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Missing Sections", total_missing)
-                        
-                        with col2:
-                            coverage = ((len(all_sections) - total_missing) / len(all_sections)) * 100
-                            st.metric("Attendance Coverage", f"{coverage:.1f}%")
-                        
-                        # Display missing sections in a organized way
-                        st.write("##### Sections without Attendance:")
-                        for section in period_data['Missing Sections']:
-                            st.markdown(f"""
-                                <div style='background: #FF575720; 
-                                          padding: 8px 15px; 
-                                          border-radius: 5px; 
-                                          border-left: 4px solid #FF5757;
-                                          margin: 5px 0;'>
-                                    {section}
-                                </div>
-                            """, unsafe_allow_html=True)
-            else:
-                st.success("✅ All sections have attendance marked for all periods!")
-                
-        else:
-            if view_type == "Date Range":
-                st.info(f"No classes recorded between {start_date_str} and {end_date_str}")
-            else:
-                st.info(f"No classes recorded on {start_date_str}")
-            
-    except Exception as e:
-        st.error(f"Error loading class schedule: {str(e)}")
-
 def faculty_page():
-    """Updated faculty page with course filtering and enhanced download options"""
+    """Updated faculty page with course filtering"""
     faculty_name = st.session_state.faculty_name
     
     st.title(f"Welcome, {faculty_name}")
@@ -2976,7 +2609,7 @@ def faculty_page():
         st.header("Navigation")
         page = st.radio(
             "Select", 
-            ["Mark Attendance", "Class Schedule", "View Statistics", "Student Reports", 
+            ["Mark Attendance", "View Statistics", "Student Reports", 
              "Subject Analysis", "My Workload", "Reset Credentials"]
         )
 
@@ -2989,6 +2622,7 @@ def faculty_page():
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
+            # Period selection
             period = st.selectbox(
                 "Select Period",
                 options=[''] + ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
@@ -2996,6 +2630,7 @@ def faculty_page():
             )
         
         with col2:
+            # Get courses for dropdown
             courses = get_courses(for_attendance=True)
             selected_course = st.selectbox(
                 "Select Course",
@@ -3004,6 +2639,7 @@ def faculty_page():
             )
         
         with col3:
+            # Get filtered sections based on selected course
             filtered_sections = get_sections_by_course(selected_course, for_attendance=True) if selected_course else []
             selected_section = st.selectbox(
                 "Select Section",
@@ -3021,6 +2657,7 @@ def faculty_page():
                     key="subject_select"
                 )
 
+            # Early duplicate check
             if subject:
                 current_date = datetime.now().strftime('%d/%m/%Y')
                 is_duplicate, existing_faculty = check_duplicate_attendance(selected_section, period, current_date)
@@ -3033,164 +2670,229 @@ def faculty_page():
                         st.error("⚠️ Attendance for this section and period has already been marked")
                         return
 
+                # Update session state
                 st.session_state.period = period
                 st.session_state.sections = [selected_section] if selected_section else []
                 st.session_state.subject = subject
 
+                # Proceed to mark attendance
                 mark_attendance_page()
             else:
                 st.info("Please select subject to continue")
         else:
             st.info("Please select period and section")
 
-    elif page == "Class Schedule":
-        show_class_schedule_page()
-            
     elif page == "View Statistics":
         st.subheader("View Attendance Statistics")
         
+        # First select course
         courses = get_courses(for_attendance=False)
         selected_course = st.selectbox("Select Course", options=[''] + courses)
         
         if selected_course:
+            # Then show filtered sections
             sections = get_sections_by_course(selected_course, for_attendance=False)
             selected_sections = st.multiselect("Select Sections", options=sections)
             
             if selected_sections:
+                # Date range selection
                 col1, col2 = st.columns(2)
                 with col1:
                     from_date = st.date_input("From Date")
                 with col2:
                     to_date = st.date_input("To Date")
                 
-                all_stats = []
-                for section in selected_sections:
-                    stats_df = get_attendance_stats(section, from_date, to_date)
-                    if stats_df is not None and not stats_df.empty:
-                        stats_df['Section'] = section
-                        all_stats.append(stats_df)
-                
-                if all_stats:
-                    combined_stats = pd.concat(all_stats, ignore_index=True)
+                if selected_sections:
+                    all_stats = []
+                    for section in selected_sections:
+                        stats_df = get_attendance_stats(section, from_date, to_date)
+                        if stats_df is not None and not stats_df.empty:
+                            stats_df['Section'] = section
+                            all_stats.append(stats_df)
                     
-                    st.write("### Overall Statistics")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric("Total Students", len(combined_stats))
-                    with col2:
-                        avg_attendance = combined_stats['Overall %'].mean()
-                        st.metric("Average Attendance", f"{avg_attendance:.2f}%")
-                    with col3:
-                        below_75 = len(combined_stats[combined_stats['Overall %'] < 75])
-                        st.metric("Students Below 75%", below_75)
-                    
-                    # Configure column display
-                    column_config = {
-                        'HT Number': st.column_config.TextColumn('HT Number', width=120),
-                        'Student Name': st.column_config.TextColumn('Student Name', width=180),
-                        'Section': st.column_config.TextColumn('Section', width=150),
-                        'Overall %': st.column_config.NumberColumn(
-                            'Overall %',
-                            format="%.2f%%",
-                            width=100
-                        )
-                    }
-                    
-                    for col in combined_stats.columns:
-                        if 'Attended/Conducted' in col:
-                            new_col = col.replace('Attended/Conducted', 'A/C')
-                            column_config[col] = st.column_config.TextColumn(
-                                new_col,
-                                width=150
+                    if all_stats:
+                        combined_stats = pd.concat(all_stats, ignore_index=True)
+                        
+                        st.write("### Overall Statistics")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("Total Students", len(combined_stats))
+                        with col2:
+                            avg_attendance = combined_stats['Overall %'].mean()
+                            st.metric("Average Attendance", f"{avg_attendance:.2f}%")
+                        with col3:
+                            below_75 = len(combined_stats[combined_stats['Overall %'] < 75])
+                            st.metric("Students Below 75%", below_75)
+                        
+                        # Configure column display
+                        column_config = {
+                            'HT Number': st.column_config.TextColumn('HT Number', width=120),
+                            'Student Name': st.column_config.TextColumn('Student Name', width=180),
+                            'Section': st.column_config.TextColumn('Section', width=150),
+                            'Overall %': st.column_config.NumberColumn(
+                                'Overall %',
+                                format="%.2f%%",
+                                width=100
                             )
-                    
-                    st.write("### Student-wise Statistics")
-                    st.dataframe(
-                        combined_stats,
-                        column_config=column_config,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    
-                    # Download options
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("📊 Download Excel"):
-                            buffer = io.BytesIO()
-                            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                                combined_stats.to_excel(writer, sheet_name='Attendance_Stats', index=False)
-                                
-                                worksheet = writer.sheets['Attendance_Stats']
-                                
-                                # Add legend at the top
-                                worksheet.insert_rows(0)
-                                legend_cell = worksheet.cell(row=1, column=1)
-                                legend_cell.value = "A: Attended, C: Conducted"
-                                legend_cell.font = Font(italic=True)
-                                
-                                # Format cells
-                                for column in worksheet.columns:
-                                    max_length = max(len(str(cell.value or '')) for cell in column)
-                                    worksheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max_length + 2))
-                                    
-                                thin_border = Border(left=Side(style='thin'), 
-                                                   right=Side(style='thin'), 
-                                                   top=Side(style='thin'), 
-                                                   bottom=Side(style='thin'))
-                                                   
-                                for row in worksheet.iter_rows(min_row=2):
-                                    for cell in row:
-                                        cell.border = thin_border
-                                        cell.alignment = Alignment(horizontal='center', vertical='center')
-                            
-                            st.download_button(
-                                label="📥 Download Excel File",
-                                data=buffer.getvalue(),
-                                file_name=f"attendance_stats_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-
-                    with col2:
-                        if st.button("📄 Download PDF"):
-                            try:
-                                # Prepare data for PDF
-                                pdf_df = combined_stats.copy()
-                                
-                                # Replace column headers with A/C notation
-                                pdf_df.columns = [col.replace('Attended/Conducted', 'A/C') for col in pdf_df.columns]
-                                
-                                filters = {
-                                    "Course": selected_course,
-                                    "Sections": ", ".join(selected_sections),
-                                    "Date Range": f"{from_date} to {to_date}"
-                                }
-                                
-                                pdf_data = generate_statistics_pdf(
-                                    df=pdf_df,
-                                    title="Attendance Statistics Report",
-                                    filters=filters
+                        }
+                        
+                        for col in combined_stats.columns:
+                            if 'Attended/Conducted' in col:
+                                column_config[col] = st.column_config.TextColumn(
+                                    col,
+                                    width=150
                                 )
-                                
-                                if pdf_data:
-                                    st.download_button(
-                                        label="📥 Download PDF Report",
-                                        data=pdf_data,
-                                        file_name=f"attendance_stats_{datetime.now().strftime('%Y%m%d')}.pdf",
-                                        mime="application/pdf"
-                                    )
-                                else:
-                                    st.error("Error generating PDF report")
-                            except Exception as e:
-                                st.error(f"Error generating PDF report: {str(e)}")
-                else:
-                    st.info("No attendance records found for the selected criteria")
+                        
+                        st.write("### Student-wise Statistics")
+                        st.dataframe(
+                            combined_stats,
+                            column_config=column_config,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        if st.button("Download Report"):
+                            csv = combined_stats.to_csv(index=False)
+                            st.download_button(
+                                label="Download CSV",
+                                data=csv,
+                                file_name=f"attendance_stats_combined_{datetime.now().strftime('%Y%m%d')}.csv",
+                                mime="text/csv"
+                            )
+                    else:
+                        st.info("No attendance records found for the selected criteria")
 
     elif page == "Student Reports":
-        student_reports_page()
+        st.subheader("Individual Student Reports")
+        
+        # First select course
+        courses = get_courses(for_attendance=False)
+        selected_course = st.selectbox("Select Course", options=[''] + courses)
+        
+        if selected_course:
+            # Then show filtered sections
+            sections = get_sections_by_course(selected_course, for_attendance=False)
+            selected_sections = st.multiselect("Select Sections", options=sections)
+            
+            if selected_sections:
+                try:
+                    df = pd.read_excel('attendance.xlsx', sheet_name='Students')
+                    df_filtered = df[df['Original Section'].isin(selected_sections)]
+                    
+                    if not df_filtered.empty:
+                        student = st.selectbox(
+                            "Select Student",
+                            df_filtered['HT Number'].tolist(),
+                            format_func=lambda x: f"{x} - {df_filtered[df_filtered['HT Number']==x]['Student Name'].iloc[0]} ({df_filtered[df_filtered['HT Number']==x]['Original Section'].iloc[0]})"
+                        )
+                        
+                        if student:
+                            student_data = df_filtered[df_filtered['HT Number'] == student].iloc[0]
+                            
+                            st.write(f"### Attendance Report for {student}")
+                            st.write(f"**Name:** {student_data['Student Name']}")
+                            st.write(f"**Section:** {student_data['Original Section']}")
+                            
+                            attendance_data = get_student_attendance_details(student_data['Original Section'], student)
+                            
+                            if attendance_data is not None and not attendance_data.empty:
+                                column_config = {
+                                    'Date': st.column_config.TextColumn('Date', width=100),
+                                    'Time': st.column_config.TextColumn('Time', width=100),
+                                    'Period': st.column_config.TextColumn('Period', width=80),
+                                    'Status': st.column_config.TextColumn('Status', width=80),
+                                    'Faculty': st.column_config.TextColumn('Faculty', width=150),
+                                    'Subject': st.column_config.TextColumn('Subject', width=150)
+                                }
+                                
+                                st.dataframe(
+                                    attendance_data.sort_values('Date', ascending=False),
+                                    column_config=column_config,
+                                    hide_index=True,
+                                    use_container_width=True
+                                )
+                                
+                                if st.button("Download Student Report"):
+                                    csv = attendance_data.to_csv(index=False)
+                                    st.download_button(
+                                        label="Download CSV",
+                                        data=csv,
+                                        file_name=f"student_report_{student}_{datetime.now().strftime('%Y%m%d')}.csv",
+                                        mime="text/csv"
+                                    )
+                            else:
+                                st.info("No attendance records found")
+                    else:
+                        st.info("No students found in selected sections")
+                        
+                except Exception as e:
+                    st.error(f"Error loading student data: {str(e)}")
 
     elif page == "Subject Analysis":
-        subject_analysis_page()
+        st.subheader("Subject-wise Analysis")
+        
+        # First select course
+        courses = get_courses(for_attendance=True)
+        selected_course = st.selectbox("Select Course", options=[''] + courses)
+        
+        if selected_course:
+            # Then show filtered sections
+            sections = get_sections_by_course(selected_course, for_attendance=True)
+            section = st.selectbox("Select Section", sections if sections else ["No sections available"])
+            
+            if section and section != "No sections available":
+                # Get subjects for merged section
+                subjects = get_section_subjects(section, for_subject_analysis=True)
+                if subjects:
+                    subject = st.selectbox("Select Subject", subjects)
+                    
+                    if subject:
+                        try:
+                            analysis_df = get_subject_analysis(section, subject)
+                            if not analysis_df.empty:
+                                st.write("### Subject Statistics")
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    avg_attendance = analysis_df['Attendance %'].mean()
+                                    st.metric("Average Attendance", f"{avg_attendance:.2f}%")
+                                with col2:
+                                    total_classes = analysis_df['Total Classes'].max()
+                                    st.metric("Total Classes", total_classes)
+                                with col3:
+                                    below_75 = len(analysis_df[analysis_df['Attendance %'] < 75])
+                                    st.metric("Students Below 75%", below_75)
+                                
+                                st.write("### Student-wise Analysis")
+                                st.dataframe(
+                                    analysis_df.sort_values('Attendance %', ascending=False),
+                                    column_config={
+                                        'HT Number': st.column_config.TextColumn('HT Number', width=120),
+                                        'Student Name': st.column_config.TextColumn('Student Name', width=180),
+                                        'Original Section': st.column_config.TextColumn('Original Section', width=150),
+                                        'Classes Attended': st.column_config.NumberColumn('Classes Attended', width=130),
+                                        'Total Classes': st.column_config.NumberColumn('Total Classes', width=120),
+                                        'Attendance %': st.column_config.NumberColumn('Attendance %', format="%.2f%%", width=120)
+                                    },
+                                    hide_index=True,
+                                    use_container_width=True
+                                )
+                                
+                                if st.button("Download Analysis"):
+                                    csv = analysis_df.to_csv(index=False)
+                                    st.download_button(
+                                        label="Download CSV",
+                                        data=csv,
+                                        file_name=f"subject_analysis_{section}_{subject}_{datetime.now().strftime('%Y%m%d')}.csv",
+                                        mime="text/csv"
+                                    )
+                            else:
+                                st.info(f"No attendance records found for {subject} in {section}")
+                        except Exception as e:
+                            st.error(f"Error accessing attendance data: {str(e)}")
+                else:
+                    st.error(f"No subjects found for section '{section}' in Section-Subject-Mapping sheet.")
 
     elif page == "My Workload":
         workload_analysis_page()
@@ -3202,6 +2904,8 @@ def faculty_page():
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
+
+
 
 def check_login(username, password, is_admin=False):
     """Verify login credentials with improved data handling"""
@@ -3611,3 +3315,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
