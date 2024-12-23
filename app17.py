@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
-import shutil
-import glob
-import os
+
 import hashlib
 import openpyxl
 from openpyxl.styles import Font
@@ -677,6 +675,124 @@ def create_template_df(sheet_name):
         return pd.DataFrame()
 
 
+def subject_analysis_page():
+    """Page for subject-wise analysis with improved date filtering"""
+    st.subheader("Subject-wise Analysis")
+    
+    # First select course
+    courses = get_courses(for_attendance=True)
+    selected_course = st.selectbox("Select Course", options=[''] + courses)
+    
+    if selected_course:
+        # Then show filtered sections
+        sections = get_sections_by_course(selected_course, for_attendance=True)
+        section = st.selectbox("Select Section", sections if sections else ["No sections available"])
+        
+        if section and section != "No sections available":
+            # Get subjects for merged section
+            subjects = get_section_subjects(section, for_subject_analysis=True)
+            if subjects:
+                subject = st.selectbox("Select Subject", subjects)
+                
+                if subject:
+                    # Add date range selection
+                    st.write("### Select Date Range")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        from_date = st.date_input(
+                            "From Date",
+                            datetime.now().replace(day=1),  # Default to first day of current month
+                            key="subject_from_date"
+                        )
+                    with col2:
+                        to_date = st.date_input(
+                            "To Date",
+                            datetime.now(),  # Default to current date
+                            key="subject_to_date"
+                        )
+                    
+                    # Get analysis with date filtering
+                    analysis_df = get_subject_analysis(section, subject, from_date, to_date)
+                    
+                    if not analysis_df.empty:
+                        st.write("### Subject Statistics")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            avg_attendance = analysis_df['Attendance %'].mean()
+                            st.metric("Average Attendance", f"{avg_attendance:.2f}%")
+                        with col2:
+                            total_classes = analysis_df['Total Classes'].max()
+                            st.metric("Total Classes", total_classes)
+                        with col3:
+                            below_75 = len(analysis_df[analysis_df['Attendance %'] < 75])
+                            st.metric("Students Below 75%", below_75)
+                        
+                        st.write("### Student-wise Analysis")
+                        st.dataframe(
+                            analysis_df.sort_values('Attendance %', ascending=False),
+                            column_config={
+                                'HT Number': st.column_config.TextColumn('HT Number', width=120),
+                                'Student Name': st.column_config.TextColumn('Student Name', width=180),
+                                'Original Section': st.column_config.TextColumn('Original Section', width=150),
+                                'Classes Attended': st.column_config.NumberColumn('Classes Attended', width=130),
+                                'Total Classes': st.column_config.NumberColumn('Total Classes', width=120),
+                                'Attendance %': st.column_config.NumberColumn('Attendance %', format="%.2f%%", width=120)
+                            },
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                        
+                        # In subject_analysis_page(), replace the download button section with:
+                        if st.button("Download Analysis"):
+                            # Create Excel file
+                            buffer = io.BytesIO()
+                            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                                analysis_df.to_excel(writer, sheet_name='Subject Analysis', index=False)
+                                
+                                # Format worksheet
+                                worksheet = writer.sheets['Subject Analysis']
+                                
+                                # Format class count columns as text
+                                for idx, col in enumerate(analysis_df.columns):
+                                    if 'Classes' in col:
+                                        col_letter = chr(65 + idx)
+                                        for cell in worksheet[col_letter][1:]:  # Skip header row
+                                            cell.number_format = '@'
+                                
+                                # Set column widths
+                                for column in worksheet.columns:
+                                    max_length = max(len(str(cell.value or '')) for cell in column)
+                                    worksheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max_length + 2))
+                                    
+                                # Add borders and alignment
+                                thin_border = Border(left=Side(style='thin'), 
+                                                right=Side(style='thin'), 
+                                                top=Side(style='thin'), 
+                                                bottom=Side(style='thin'))
+                                                
+                                for row in worksheet.rows:
+                                    for cell in row:
+                                        cell.border = thin_border
+                                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                            
+                            # Offer download as Excel
+                            st.download_button(
+                                label="Download Excel",
+                                data=buffer.getvalue(),
+                                file_name=f"subject_analysis_{section}_{subject}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                    else:
+                        st.info(f"No attendance records found for {subject} in {section} for the selected date range")
+                else:
+                    st.info("Please select a subject to continue")
+            else:
+                st.error(f"No subjects found for section '{section}' in Section-Subject-Mapping sheet.")
+        else:
+            st.info("Please select a valid section to continue")
+    else:
+        st.info("Please select a course to continue")
 
 def get_subject_analysis(section, subject, from_date=None, to_date=None):
     """Get subject-wise attendance analysis with improved date filtering"""
@@ -702,26 +818,20 @@ def get_subject_analysis(section, subject, from_date=None, to_date=None):
                             # Parse date from entry
                             try:
                                 parts = entry.split('_')
-                                if len(parts) >= 5:  # Ensure we have enough parts
-                                    date_str = parts[0]
-                                    date_obj = datetime.strptime(date_str, '%d/%m/%Y').date()
+                                date_str = parts[0]
+                                date_obj = datetime.strptime(date_str, '%d/%m/%Y').date()
+                                
+                                # Apply date filter if dates are provided
+                                if from_date and to_date:
+                                    filter_from = from_date if isinstance(from_date, datetime.date) else from_date.date()
+                                    filter_to = to_date if isinstance(to_date, datetime.date) else to_date.date()
                                     
-                                    # Convert input dates to datetime.date objects if needed
-                                    filter_from = from_date
-                                    filter_to = to_date
-                                    if isinstance(from_date, datetime):
-                                        filter_from = from_date.date()
-                                    if isinstance(to_date, datetime):
-                                        filter_to = to_date.date()
-                                    
-                                    # Apply date filter if dates are provided
-                                    if filter_from and filter_to:
-                                        if not (filter_from <= date_obj <= filter_to):
-                                            continue
-                                    
-                                    total += 1
-                                    if '_P_' in entry:
-                                        present += 1
+                                    if not (filter_from <= date_obj <= filter_to):
+                                        continue
+                                
+                                total += 1
+                                if '_P_' in entry:
+                                    present += 1
                             except (ValueError, IndexError) as e:
                                 continue
             
@@ -736,127 +846,10 @@ def get_subject_analysis(section, subject, from_date=None, to_date=None):
                     'Attendance %': round(percentage, 2)
                 })
         
-        if not analysis:
-            return pd.DataFrame()
-            
         return pd.DataFrame(analysis)
-        
     except Exception as e:
         st.error(f"Error in subject analysis: {str(e)}")
         return pd.DataFrame()
-
-def subject_analysis_page():
-    """Page for subject-wise analysis with improved date filtering and error handling"""
-    st.subheader("Subject-wise Analysis")
-    
-    try:
-        # First select course
-        courses = get_courses(for_attendance=True)
-        selected_course = st.selectbox("Select Course", options=[''] + courses)
-        
-        if selected_course:
-            # Then show filtered sections
-            sections = get_sections_by_course(selected_course, for_attendance=True)
-            if not sections:
-                st.info("No sections available for selected course")
-                return
-                
-            section = st.selectbox("Select Section", options=sections)
-            
-            if section:
-                # Get subjects for merged section
-                subjects = get_section_subjects(section, for_subject_analysis=True)
-                if subjects:
-                    subject = st.selectbox("Select Subject", options=subjects)
-                    
-                    if subject:
-                        # Add date range selection
-                        st.write("### Select Date Range")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            from_date = st.date_input(
-                                "From Date",
-                                datetime.now().replace(day=1)
-                            )
-                        with col2:
-                            to_date = st.date_input(
-                                "To Date",
-                                datetime.now()
-                            )
-                        
-                        # Get analysis with date filtering
-                        analysis_df = get_subject_analysis(section, subject, from_date, to_date)
-                        
-                        if not analysis_df.empty:
-                            st.write("### Subject Statistics")
-                            col1, col2, col3 = st.columns(3)
-                            
-                            with col1:
-                                avg_attendance = analysis_df['Attendance %'].mean()
-                                st.metric("Average Attendance", f"{avg_attendance:.2f}%")
-                            with col2:
-                                total_classes = analysis_df['Total Classes'].max()
-                                st.metric("Total Classes", total_classes)
-                            with col3:
-                                below_75 = len(analysis_df[analysis_df['Attendance %'] < 75])
-                                st.metric("Students Below 75%", below_75)
-                            
-                            st.write("### Student-wise Analysis")
-                            st.dataframe(
-                                analysis_df.sort_values('Attendance %', ascending=False),
-                                column_config={
-                                    'HT Number': st.column_config.TextColumn('HT Number', width=120),
-                                    'Student Name': st.column_config.TextColumn('Student Name', width=180),
-                                    'Original Section': st.column_config.TextColumn('Original Section', width=150),
-                                    'Classes Attended': st.column_config.NumberColumn('Classes Attended', width=130),
-                                    'Total Classes': st.column_config.NumberColumn('Total Classes', width=120),
-                                    'Attendance %': st.column_config.NumberColumn('Attendance %', format="%.2f%%", width=120)
-                                },
-                                hide_index=True,
-                                use_container_width=True
-                            )
-                            
-                            if st.button("Download Analysis"):
-                                buffer = io.BytesIO()
-                                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                                    analysis_df.to_excel(writer, sheet_name='Subject Analysis', index=False)
-                                    
-                                    worksheet = writer.sheets['Subject Analysis']
-                                    
-                                    for column in worksheet.columns:
-                                        max_length = max(len(str(cell.value or '')) for cell in column)
-                                        worksheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max_length + 2))
-                                        
-                                    thin_border = Border(
-                                        left=Side(style='thin'),
-                                        right=Side(style='thin'),
-                                        top=Side(style='thin'),
-                                        bottom=Side(style='thin')
-                                    )
-                                    
-                                    for row in worksheet.iter_rows():
-                                        for cell in row:
-                                            cell.border = thin_border
-                                            cell.alignment = Alignment(horizontal='center', vertical='center')
-                                
-                                st.download_button(
-                                    label="Download Excel",
-                                    data=buffer.getvalue(),
-                                    file_name=f"subject_analysis_{section}_{subject}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                )
-                        else:
-                            st.info(f"No attendance records found for {subject} in {section} for the selected date range")
-                    else:
-                        st.info("Please select a subject to continue")
-                else:
-                    st.error(f"No subjects found for section '{section}' in Section-Subject-Mapping sheet.")
-            else:
-                st.info("Please select a section to continue")
-        else:
-            st.info("Please select a course to continue")
-    except Exception as e:
-        st.error(f"Error in subject analysis: {str(e)}")
 
 
 def student_reports_page():
@@ -971,26 +964,20 @@ def get_student_attendance_details(section, student_id, from_date=None, to_date=
                 for entry in entries:
                     if entry.strip():
                         try:
-                            # More flexible splitting to handle different formats
                             parts = entry.split('_')
-                            if len(parts) >= 4:  # Minimum required parts
+                            if len(parts) >= 6:
                                 date = parts[0]
+                                date_obj = pd.to_datetime(date, format='%d/%m/%Y')
+                                
+                                # Apply date range filter
+                                if from_date and to_date:
+                                    if not (from_date <= date_obj <= to_date):
+                                        continue
+                                
                                 time = parts[1]
                                 status = parts[2]
                                 faculty = parts[3]
-                                # Join remaining parts as subject and plan
-                                subject_and_plan = '_'.join(parts[4:]) if len(parts) > 4 else ''
-                                
-                                # Convert date string to datetime object for filtering
-                                date_obj = datetime.strptime(date, '%d/%m/%Y')
-                                
-                                # Apply date range filter if dates are provided
-                                if from_date and to_date:
-                                    filter_from = from_date if isinstance(from_date, datetime) else datetime.combine(from_date, datetime.min.time())
-                                    filter_to = to_date if isinstance(to_date, datetime) else datetime.combine(to_date, datetime.max.time())
-                                    
-                                    if not (filter_from <= date_obj <= filter_to):
-                                        continue
+                                subject_and_plan = '_'.join(parts[4:])
                                 
                                 attendance_data.append({
                                     'Date': date,
@@ -1001,21 +988,13 @@ def get_student_attendance_details(section, student_id, from_date=None, to_date=
                                     'Subject': subject_and_plan
                                 })
                         except Exception as e:
-                            st.error(f"Error processing entry: {entry}\nError: {str(e)}")
+                            st.error(f"Error processing entry: {entry}")
                             continue
         
         if not attendance_data:
             return pd.DataFrame()
             
-        df_attendance = pd.DataFrame(attendance_data)
-        
-        # Sort by date and time
-        df_attendance['DateObj'] = pd.to_datetime(df_attendance['Date'], format='%d/%m/%Y')
-        df_attendance = df_attendance.sort_values(['DateObj', 'Time'], ascending=[False, False])
-        df_attendance = df_attendance.drop('DateObj', axis=1)
-        
-        return df_attendance
-        
+        return pd.DataFrame(attendance_data)
     except Exception as e:
         st.error(f"Error getting attendance details: {str(e)}")
         return None
@@ -1042,63 +1021,22 @@ def get_courses(for_attendance=False):
         st.error(f"Error getting courses: {str(e)}")
         return []
 
-def verify_excel_file():
-    """Verify Excel file integrity"""
-    try:
-        with open('attendance.xlsx', 'rb') as file:
-            # Read file content
-            content = file.read()
-            # Basic integrity check
-            if len(content) < 100:  # Too small to be valid
-                return False
-            # Try opening with pandas
-            pd.read_excel('attendance.xlsx', sheet_name=None)
-            return True
-    except Exception:
-        return False
-
-def backup_excel_file():
-    """Create backup of Excel file"""
-    try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup_path = f'backup/attendance_{timestamp}.xlsx'
-        os.makedirs('backup', exist_ok=True)
-        shutil.copy2('attendance.xlsx', backup_path)
-        # Keep only last 5 backups
-        backups = sorted(glob.glob('backup/attendance_*.xlsx'))
-        if len(backups) > 5:
-            os.remove(backups[0])
-    except Exception as e:
-        st.error(f"Backup failed: {str(e)}")
-
 def get_sections_by_course(course, for_attendance=False):
-    """Get sections filtered by course with enhanced error handling"""
+    """Get sections filtered by course"""
     try:
         if not course:  # If no course selected, return empty list
             return []
             
-        # Add file verification before reading
-        if not os.path.exists('attendance.xlsx'):
-            st.error("Attendance file not found")
-            return []
-            
-        # Try reading with repair mode
-        try:
-            df = pd.read_excel('attendance.xlsx', sheet_name='Students', dtype={
-                'Course': str,
-                'Original Section': str,
-                'Merged Section': str
-            })
-        except Exception as e:
-            # If normal read fails, try to repair
-            st.warning("Attempting to repair Excel file...")
-            # Create backup
-            backup_excel_file()
-            # Try alternate reading method
-            df = pd.read_excel('attendance.xlsx', sheet_name='Students', engine='openpyxl')
+        # Read the Excel file
+        df = pd.read_excel('attendance.xlsx', sheet_name='Students', dtype={
+            'Course': str,
+            'Original Section': str,
+            'Merged Section': str
+        })
         
         # Filter by course
         df = df[df['Course'] == course]
+        
         if for_attendance:
             # For attendance marking: use merged sections
             sections = df['Merged Section'].dropna().unique().tolist()
@@ -1115,7 +1053,6 @@ def get_sections_by_course(course, for_attendance=False):
     except Exception as e:
         st.error(f"Error getting sections for course: {str(e)}")
         return []
-
 
 def get_attendance_stats(section, from_date=None, to_date=None):
     """Calculate attendance statistics with attended/conducted format"""
@@ -2565,9 +2502,9 @@ def get_last_class_attendance(section, period):
         return None
 
 def mark_attendance_page():
-    """Enhanced attendance marking page without constant refreshes"""
+    """Enhanced attendance marking page with cross-faculty pattern change detection"""
     section = st.session_state.sections[0] if st.session_state.sections else None
-    subject = st.session_state.subject  
+    subject = st.session_state.subject
     period = st.session_state.period
 
     if section and period:
@@ -2613,102 +2550,94 @@ def mark_attendance_page():
         # Get students for this section
         df_students = get_student_data(section, for_attendance=True)
         if df_students is not None:
-            # Initialize attendance data dictionary if not exists
-            if 'attendance_data' not in st.session_state:
-                st.session_state.attendance_data = {}
-                
+            attendance_data = {}
+            
             # Initialize select_all in session state if not present
             if 'select_all' not in st.session_state:
-                st.session_state.select_all = True
+                st.session_state.select_all = True  # Default to all present
             
-            # Use form to prevent constant refreshes
-            with st.form(key='attendance_form'):
-                # Initialize data structures
-                current_pattern = {}
-                attendance_data = {}
-                
-                # Quick action buttons in three columns
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    mark_all_present = st.form_submit_button("✓ Mark All Present", type="primary")
-                with col2:
-                    mark_all_absent = st.form_submit_button("✗ Mark All Absent")
-                with col3:
-                    use_last_pattern = st.form_submit_button("↺ Use Last Pattern")
-
-                # Update status based on form actions
-                if mark_all_present:
+            # Quick action buttons in three columns
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("✓ Mark All Present", use_container_width=True, type="primary"):
                     st.session_state.select_all = True
-                    for _, student in df_students.iterrows():
-                        st.session_state[f"attendance_{student['HT Number']}"] = True
-                elif mark_all_absent:
+                    st.session_state.last_pattern = None
+                    st.rerun()
+            with col2:
+                if st.button("✗ Mark All Absent", use_container_width=True):
                     st.session_state.select_all = False
-                    for _, student in df_students.iterrows():
-                        st.session_state[f"attendance_{student['HT Number']}"] = False
-                elif use_last_pattern:
-                    last_pattern = get_last_class_attendance(section, period)
+                    st.session_state.last_pattern = None
+                    st.rerun()
+            with col3:
+                if st.button("↺ Use Last Pattern", use_container_width=True):
+                    last_pattern = get_last_class_attendance(section, period)  # Pass only section and period
                     if last_pattern:
                         st.session_state.last_pattern = last_pattern
-                        for _, student in df_students.iterrows():
-                            ht_number = str(student['HT Number'])
-                            st.session_state[f"attendance_{ht_number}"] = last_pattern.get(ht_number, {}).get('status', 'P') == 'P'
+                        st.session_state.select_all = None  # Clear select all when using last pattern
+                        st.rerun()
                     else:
                         st.warning("No previous attendance pattern found")
+                        st.session_state.last_pattern = None
 
-                # Student list with clean cards
-                for _, student in df_students.iterrows():
-                    ht_number = str(student['HT Number'])
+            # Store current attendance pattern for comparison
+            current_pattern = {}
+
+            # Student list with clean cards
+            for _, student in df_students.iterrows():
+                with st.container():
+                    col1, col2 = st.columns([7,3])
                     
-                    # Get default value from session state or use select_all
-                    default_value = st.session_state.get(f"attendance_{ht_number}", st.session_state.select_all)
-
-                    with st.container():
-                        col1, col2 = st.columns([7,3])
-                        
-                        with col1:
-                            st.markdown(f"""
-                                <div class="student-info" style="background: #1E1E1E; padding: 0.5rem; border-radius: 8px;">
-                                    <div style="font-size: 1rem; font-weight: 500; color: #FF0099; margin-bottom: 0.2rem;">
-                                        {student['Student Name']}
-                                    </div>
-                                    <div style="font-size: 1rem; color: #FF9900; margin-bottom: 0.2rem;">
-                                        {ht_number}
-                                    </div>
-                                    <div style="font-size: 0.8rem; color: #888;">
-                                        {student['Original Section']}
-                                    </div>
+                    with col1:
+                        st.markdown(f"""
+                            <div class="student-info" style="background: #1E1E1E; padding: 0.5rem; border-radius: 8px;">
+                                <div style="font-size: 1rem; font-weight: 500; color: #FF0099; margin-bottom: 0.2rem;">
+                                    {student['Student Name']}
                                 </div>
-                            """, unsafe_allow_html=True)
-                        
-                        with col2:
-                            # Use form checkbox to prevent refresh
-                            status = st.checkbox(
-                                "Present",
-                                value=default_value,
-                                key=f"form_attendance_{ht_number}"
-                            )
-                            
-                        current_pattern[ht_number] = 'P' if status else 'A'
-                        attendance_data[ht_number] = {
-                            'status': 'P' if status else 'A',
-                            'original_section': student['Original Section']
-                        }
+                                <div style="font-size: 1rem; color: #FF9900; margin-bottom: 0.2rem;">
+                                    {student['HT Number']}
+                                </div>
+                                <div style="font-size: 0.8rem; color: #888;">
+                                    {student['Original Section']}
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
                     
-                    st.markdown("<hr style='margin: 0.5rem 0; border: none; border-top: 1px solid #333;'>", unsafe_allow_html=True)
+                    with col2:
+                        # Set default value based on session state
+                        if 'last_pattern' in st.session_state and st.session_state.last_pattern is not None:
+                            default_value = st.session_state.last_pattern.get(str(student['HT Number']), {}).get('status', True) == 'P'
+                        else:
+                            default_value = st.session_state.select_all
+                            
+                        status = st.checkbox(
+                            "Present",
+                            key=f"attendance_{student['HT Number']}",
+                            value=default_value
+                        )
+                        
+                        # Store current attendance status
+                        current_pattern[str(student['HT Number'])] = 'P' if status else 'A'
+                        
+                    attendance_data[student['HT Number']] = {
+                        'status': 'P' if status else 'A',
+                        'original_section': student['Original Section']
+                    }
+                
+                st.markdown("<hr style='margin: 0.5rem 0; border: none; border-top: 1px solid #333;'>", unsafe_allow_html=True)
 
-                # Add lesson plan input
-                lesson_plan = st.text_area(
-                    "Enter Lesson Plan/Topic Name (Required)",
-                    help="Please enter topic covered in this class",
-                    height=100,
-                    key="lesson_plan"
-                )
-                
-                # Submit button at the bottom of the form
-                submit_button = st.form_submit_button("📝 Submit Attendance", type="primary", use_container_width=True)
-                
-            # Handle form submission outside the form
+            # Add lesson plan input
+            lesson_plan = st.text_area(
+                "Enter Lesson Plan/Topic Name (Required)",
+                help="Please enter topic covered in this class",
+                key="lesson_plan",
+                height=100
+            )
+            
+            # Submit button with margin space
+            st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
+            
+            submit_button = st.button("📝 Submit Attendance", type="primary", key="submit_attendance", use_container_width=True)
+            
             if submit_button:
                 if not lesson_plan.strip():
                     st.error("⚠️ Please enter a lesson plan before submitting attendance")
@@ -2742,10 +2671,10 @@ def mark_attendance_page():
                         
                         # Compare with previous period's pattern
                         if period != 'P1':
-                            last_pattern = get_last_class_attendance(section, period)
+                            last_pattern = get_last_class_attendance(section, period)  # Pass only section and period
                             if last_pattern and 'prev_faculty' in last_pattern:
-                                prev_faculty = last_pattern.pop('prev_faculty')
-                                prev_subject = last_pattern.pop('prev_subject')
+                                prev_faculty = last_pattern.pop('prev_faculty')  # Remove and store faculty info
+                                prev_subject = last_pattern.pop('prev_subject')  # Remove and store subject info
                                 conflicts = []
                                 for ht_number, current_status in current_pattern.items():
                                     if ht_number in last_pattern:
@@ -2753,6 +2682,7 @@ def mark_attendance_page():
                                         last_faculty = last_pattern[ht_number]['faculty']
                                         last_subject = last_pattern[ht_number]['subject']
                                         if last_status != current_status:
+                                            # Get student details
                                             student = df_students[df_students['HT Number'] == ht_number].iloc[0]
                                             conflicts.append({
                                                 'name': student['Student Name'],
@@ -2767,6 +2697,7 @@ def mark_attendance_page():
                                 
                                 if conflicts:
                                     st.warning("🔍 Attendance Pattern Changes Detected:")
+                                    # Group changes by type
                                     present_to_absent = []
                                     absent_to_present = []
                                     
@@ -2776,6 +2707,7 @@ def mark_attendance_page():
                                         elif conflict['last_status'] == 'A' and conflict['current_status'] == 'P':
                                             absent_to_present.append(conflict)
                                     
+                                    # Display Present to Absent changes
                                     if present_to_absent:
                                         st.markdown("##### Present ➡️ Absent:")
                                         for change in present_to_absent:
@@ -2795,6 +2727,7 @@ def mark_attendance_page():
                                                 </div>
                                             """, unsafe_allow_html=True)
                                     
+                                    # Display Absent to Present changes
                                     if absent_to_present:
                                         st.markdown("##### Absent ➡️ Present:")
                                         for change in absent_to_present:
@@ -2814,17 +2747,14 @@ def mark_attendance_page():
                                                 </div>
                                             """, unsafe_allow_html=True)
                                     
+                                    
+                                    
+                                    # Add summary metrics
                                     col1, col2 = st.columns(2)
                                     with col1:
                                         st.metric("Present → Absent", len(present_to_absent))
                                     with col2:
                                         st.metric("Absent → Present", len(absent_to_present))
-
-                    # Clear form data and rerun only after successful submission
-                    if success:
-                        st.session_state.attendance_data = {}
-                        st.rerun()
-
 
 def reset_username():
     """Function to handle username reset with improved data handling"""
@@ -3580,72 +3510,49 @@ def validate_upload_data(df, sheet_name):
         return False
 
 def initialize_excel():
-    """Initialize Excel file with improved error handling"""
+    """Initialize Excel file with updated sheet structure"""
     try:
-        # Check if file exists and is valid
-        if os.path.exists('attendance.xlsx'):
-            if verify_excel_file():
-                return True
-            else:
-                st.warning("Existing Excel file is corrupted. Creating new file...")
-                # Backup corrupted file
-                if os.path.exists('attendance.xlsx'):
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    shutil.move('attendance.xlsx', f'attendance_corrupted_{timestamp}.xlsx')
+        # Check if file exists
+        try:
+            pd.read_excel('attendance.xlsx', sheet_name=None)
+            return True
+        except FileNotFoundError:
+            # Create new Excel file with required sheets
+            with pd.ExcelWriter('attendance.xlsx', engine='openpyxl') as writer:
+                # Create Students sheet with updated structure
+                students_df = pd.DataFrame(columns=[
+                    'HT Number', 'Student Name', 'Original Section', 'Merged Section',
+                    'P1', 'P2', 'P3', 'P4', 'P5', 'P6'
+                ])
+                students_df.to_excel(writer, sheet_name='Students', index=False)
 
-        # Create new Excel file with required sheets
-        with pd.ExcelWriter('attendance.xlsx', engine='openpyxl') as writer:
-            # Create Students sheet with updated structure
-            students_df = pd.DataFrame(columns=[
-                'HT Number', 'Student Name', 'Original Section', 'Merged Section',
-                'P1', 'P2', 'P3', 'P4', 'P5', 'P6'
-            ])
-            students_df.to_excel(writer, sheet_name='Students', index=False)
+                # Create Faculty sheet with current month
+                current_month = datetime.now().strftime('%b%Y')
+                faculty_df = pd.DataFrame(columns=['Faculty Name', 'Username', 'Password', current_month])
+                faculty_df.to_excel(writer, sheet_name='Faculty', index=False)
 
-            # Create Faculty sheet with current month
-            current_month = datetime.now().strftime('%b%Y')
-            faculty_df = pd.DataFrame(columns=['Faculty Name', 'Username', 'Password', current_month])
-            faculty_df.to_excel(writer, sheet_name='Faculty', index=False)
+                # Create Section-Subject-Mapping sheet
+                mapping_df = pd.DataFrame(columns=['Section', 'Subject Names'])
+                mapping_df.to_excel(writer, sheet_name='Section-Subject-Mapping', index=False)
 
-            # Create Section-Subject-Mapping sheet
-            mapping_df = pd.DataFrame(columns=['Section', 'Subject Names'])
-            mapping_df.to_excel(writer, sheet_name='Section-Subject-Mapping', index=False)
+                # Format all sheets
+                for sheet_name in writer.sheets:
+                    worksheet = writer.sheets[sheet_name]
+                    for column in worksheet.columns:
+                        worksheet.column_dimensions[column[0].column_letter].width = 15
 
-            # Format all sheets
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for row in worksheet.iter_rows():
-                    for cell in row:
-                        cell.alignment = Alignment(wrap_text=True, vertical='top')
-                for column in worksheet.columns:
-                    max_length = max(len(str(cell.value or '')) for cell in column)
-                    worksheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max_length + 2))
-
-        return True
+            return True
     except Exception as e:
         st.error(f"Error initializing Excel file: {str(e)}")
         return False
 
 def main():
-    """Main function with enhanced Excel file handling"""
-    # Verify Excel file integrity
-    if not verify_excel_file():
-        st.error("Excel file is corrupted. Attempting to restore from backup...")
-        # Try to restore from latest backup
-        latest_backup = max(glob.glob('backup/attendance_*.xlsx'), default=None)
-        if latest_backup:
-            shutil.copy2(latest_backup, 'attendance.xlsx')
-            st.success("Restored from backup")
-        else:
-            st.error("No backup available. Reinitializing file...")
-            if not initialize_excel():
-                st.error("Error initializing the application. Please check the error above.")
-                return
-    
-    # Create backup before starting
-    backup_excel_file()
-    
-    # Rest of your existing main function code...
+    """Main function with initialization and login handling"""
+    # Initialize Excel file if it doesn't exist
+    if not initialize_excel():
+        st.error("Error initializing the application. Please check the error above.")
+        return
+
     if 'logged_in' not in st.session_state:
         st.title("Login")
         
@@ -3656,18 +3563,8 @@ def main():
         
         if st.button("Login", key="login_button", type="primary"):
             try:
-                # Add file verification before reading
-                if not verify_excel_file():
-                    st.error("Database error. Please try again.")
-                    return
-                    
-                # Read faculty data with enhanced error handling
-                try:
-                    df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
-                except Exception as e:
-                    st.error("Error reading faculty data. Please try again.")
-                    return
-                    
+                # Read faculty data
+                df_faculty = pd.read_excel('attendance.xlsx', sheet_name='Faculty')
                 df_faculty['Username'] = df_faculty['Username'].astype(str).str.strip()
                 df_faculty['Password'] = df_faculty['Password'].astype(str).str.strip()
                 
@@ -3697,9 +3594,6 @@ def main():
                         st.error("Please use Admin login for admin credentials")
                         return
                 
-                # Create backup after successful login
-                backup_excel_file()
-                
                 # If we get here, credentials are valid
                 st.session_state.logged_in = True
                 st.session_state.is_admin = (login_type == "Admin")
@@ -3710,18 +3604,10 @@ def main():
             except Exception as e:
                 st.error(f"Login error: {str(e)}")
     else:
-        # Create periodic backup during session
-        if 'last_backup_time' not in st.session_state:
-            st.session_state.last_backup_time = datetime.now()
-        elif (datetime.now() - st.session_state.last_backup_time).seconds > 300:  # 5 minutes
-            backup_excel_file()
-            st.session_state.last_backup_time = datetime.now()
-            
         if st.session_state.is_admin:
             admin_page()
         else:
             faculty_page()
-
 
 if __name__ == "__main__":
     main()
