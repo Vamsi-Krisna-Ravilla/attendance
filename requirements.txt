@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+streamlit
+pandas
+python-jose[cryptography]
+PyJWT
+python-jose
+passlib[bcrypt]
+python-multipart
+#pip install pandas sqlalchemy openpyxl
+#pip install pdfkit
+plotly
+models

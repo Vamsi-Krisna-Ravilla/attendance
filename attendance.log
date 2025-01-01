@@ -1,0 +1,8 @@
+2025-01-01 19:21:46,356 - ERROR - Critical system error: name 'ExcelFileHandler' is not defined
+2025-01-01 19:41:00,069 - ERROR - Login error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
+2025-01-01 19:41:02,270 - ERROR - Login error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
+2025-01-01 19:41:03,985 - ERROR - Login error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
+2025-01-01 19:45:27,442 - ERROR - Login error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
+2025-01-01 19:49:43,208 - ERROR - Login error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
+2025-01-01 20:04:15,482 - ERROR - Database initialization error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
+2025-01-01 20:04:15,483 - ERROR - Application startup error: Column expression, FROM clause, or other columns clause element expected, got <class '__main__.Faculty'>.
