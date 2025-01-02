@@ -2,11 +2,13 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
-from datetime import datetime, timedelta
+
 from io import BytesIO
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 import io
+import pytz
+
 
 
 def date_range_selector(key_prefix: str) -> tuple[datetime, datetime]:
@@ -1910,13 +1912,12 @@ def get_table_data(table_name):
             conn.close()
 
 def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_plan):
-    """Modified to distribute load based on total sections per period per day"""
-    
+    """Modified to use IST for timestamps"""
     conn = sqlite3.connect('attendance.db')
     c = conn.cursor()
     
     try:
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        current_time = format_ist_time(get_current_time_ist())
         
         # First insert into attendance table
         c.execute("""
@@ -1976,8 +1977,8 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
         
         existing = c.fetchone()
         
+        # Update or insert into faculty_worksheet
         if existing:
-            # Update existing entry with new load calculation
             c.execute("""
                 UPDATE faculty_worksheet 
                 SET student_count = ?,
@@ -1987,7 +1988,6 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
                 WHERE id = ?
             """, (student_count, lesson_plan, distributed_load, current_time, existing[0]))
         else:
-            # Insert new entry with calculated load
             c.execute("""
                 INSERT INTO faculty_worksheet 
                 (faculty, date, period, activity_type, description, subject, section, 
@@ -2017,7 +2017,154 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
     finally:
         conn.close()
 
-
+def daily_worksheet():
+    """Enhanced daily worksheet view with proper IST timezone handling"""
+    st.title("Faculty Workload Dashboard")
+    
+    # Get current time in IST
+    current_time_ist = get_current_time_ist()
+    
+    # Create tabs for different views
+    tab1, tab2 = st.tabs(["📊 Overall Workload", "📝 Daily Worksheet"])
+    
+    with tab2:
+        st.subheader("Daily Summary")
+        
+        # Date selection with IST timezone consideration
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_date = st.date_input(
+                "Select Date",
+                value=current_time_ist.date(),
+                min_value=current_time_ist.date() - timedelta(days=30),
+                max_value=current_time_ist.date() + timedelta(days=30)
+            )
+        
+        with col2:
+            view_type = st.selectbox(
+                "View Type",
+                ["Single Day", "Week View"],
+                index=0
+            )
+        
+        # Convert selected date to IST for comparison
+        selected_date_ist = datetime.combine(selected_date, datetime.min.time())
+        selected_date_ist = pytz.timezone('Asia/Kolkata').localize(selected_date_ist)
+        
+        # Get faculty worksheet data
+        conn = sqlite3.connect('attendance.db')
+        c = conn.cursor()
+        
+        try:
+            # Get all periods for the selected date
+            c.execute("""
+                SELECT DISTINCT period 
+                FROM faculty_worksheet 
+                WHERE faculty = ? 
+                AND date = ?
+                ORDER BY period
+            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
+            
+            existing_periods = {row[0] for row in c.fetchall()}
+            
+            # Calculate net class load
+            c.execute("""
+                SELECT COALESCE(SUM(load), 0)
+                FROM faculty_worksheet
+                WHERE faculty = ?
+                AND date = ?
+                AND source = 'Class'
+            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
+            
+            net_class_load = c.fetchone()[0]
+            
+            # Calculate other activities load
+            c.execute("""
+                SELECT COALESCE(SUM(load), 0)
+                FROM faculty_worksheet
+                WHERE faculty = ?
+                AND date = ?
+                AND source != 'Class'
+            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
+            
+            other_activities_load = c.fetchone()[0]
+            
+            # Display summary
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Net Class Conducted", f"{net_class_load:.1f}")
+            with col2:
+                st.metric("Other Activities", f"{other_activities_load:.1f}")
+            with col3:
+                st.metric("Total Load", f"{net_class_load + other_activities_load:.1f}/6")
+            
+            st.subheader("Period-wise Activities")
+            
+            # Show all periods (1-6) regardless of existing data
+            for period in range(1, 7):
+                period_str = f"Period {period}"
+                with st.expander(f"{period_str} - {period_str}"):
+                    if period_str in existing_periods:
+                        # Display existing activities
+                        c.execute("""
+                            SELECT activity_type, description, subject, section, 
+                                   student_count, load, source, created_at
+                            FROM faculty_worksheet
+                            WHERE faculty = ?
+                            AND date = ?
+                            AND period = ?
+                        """, (st.session_state.username, selected_date.strftime('%Y-%m-%d'), period_str))
+                        
+                        activities = c.fetchall()
+                        for activity in activities:
+                            st.write(f"**Activity:** {activity[0]}")
+                            st.write(f"**Description:** {activity[1]}")
+                            st.write(f"**Subject:** {activity[2]}")
+                            st.write(f"**Section:** {activity[3]}")
+                            st.write(f"**Student Count:** {activity[4]}")
+                            st.write(f"**Load:** {activity[5]}")
+                            st.write(f"**Source:** {activity[6]}")
+                            st.write(f"**Created At:** {format_ist_time(datetime.strptime(activity[7], '%Y-%m-%d %H:%M:%S'))}")
+                    else:
+                        st.info("No activities recorded for this period")
+                        
+                    # Add activity button
+                    if st.button(f"Add Activity", key=f"add_activity_{period}"):
+                        st.session_state.adding_activity = True
+                        st.session_state.selected_period = period_str
+            
+            # Download button
+            if st.button("Download Daily Worksheet"):
+                # Generate Excel report
+                df = pd.read_sql_query("""
+                    SELECT period, activity_type, description, subject, section, 
+                           student_count, load, source, created_at
+                    FROM faculty_worksheet
+                    WHERE faculty = ?
+                    AND date = ?
+                    ORDER BY period
+                """, conn, params=(st.session_state.username, selected_date.strftime('%Y-%m-%d')))
+                
+                # Convert created_at to IST
+                df['created_at'] = df['created_at'].apply(lambda x: format_ist_time(datetime.strptime(x, '%Y-%m-%d %H:%M:%S')))
+                
+                # Create Excel file
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Daily Worksheet')
+                    
+                # Offer download
+                st.download_button(
+                    label="📥 Download Excel",
+                    data=output.getvalue(),
+                    file_name=f"daily_worksheet_{selected_date.strftime('%Y-%m-%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+        except Exception as e:
+            st.error(f"Error loading worksheet: {str(e)}")
+        finally:
+            conn.close()
 
 
 
@@ -2813,217 +2960,16 @@ def admin_page():
 
 def get_current_time_ist():
     """Get current time in IST"""
-    from datetime import datetime
-    import pytz
-    
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist)
 
-def daily_worksheet():
-    """Enhanced daily worksheet view with proper IST timezone handling"""
-    st.title("Faculty Workload Dashboard")
-    
-    # Get current time in IST
-    current_time_ist = get_current_time_ist()
-    
-    # Create tabs for different views
-    tab1, tab2 = st.tabs(["📊 Overall Workload", "📝 Daily Worksheet"])
-    
-    with tab2:
-        st.subheader("Daily Summary")
-        
-        # Date selection with IST timezone consideration
-        col1, col2 = st.columns(2)
-        with col1:
-            selected_date = st.date_input(
-                "Select Date",
-                value=current_time_ist.date(),
-                min_value=current_time_ist.date() - timedelta(days=30),
-                max_value=current_time_ist.date() + timedelta(days=30)
-            )
-        
-        with col2:
-            view_type = st.selectbox(
-                "View Type",
-                ["Single Day", "Week View"],
-                index=0
-            )
-        
-        # Convert selected date to IST for comparison
-        selected_date_ist = datetime.combine(selected_date, datetime.min.time())
-        selected_date_ist = pytz.timezone('Asia/Kolkata').localize(selected_date_ist)
-        
-        # Get faculty worksheet data
-        conn = sqlite3.connect('attendance.db')
-        c = conn.cursor()
-        
-        try:
-            # Get all periods for the selected date
-            c.execute("""
-                SELECT DISTINCT period 
-                FROM faculty_worksheet 
-                WHERE faculty = ? 
-                AND date = ?
-                ORDER BY period
-            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
-            
-            existing_periods = {row[0] for row in c.fetchall()}
-            
-            # Calculate net class load
-            c.execute("""
-                SELECT COALESCE(SUM(load), 0)
-                FROM faculty_worksheet
-                WHERE faculty = ?
-                AND date = ?
-                AND source = 'Class'
-            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
-            
-            net_class_load = c.fetchone()[0]
-            
-            # Calculate other activities load
-            c.execute("""
-                SELECT COALESCE(SUM(load), 0)
-                FROM faculty_worksheet
-                WHERE faculty = ?
-                AND date = ?
-                AND source != 'Class'
-            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
-            
-            other_activities_load = c.fetchone()[0]
-            
-            # Display summary
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Net Class Conducted", f"{net_class_load:.1f}")
-            with col2:
-                st.metric("Other Activities", f"{other_activities_load:.1f}")
-            with col3:
-                st.metric("Total Load", f"{net_class_load + other_activities_load:.1f}/6")
-            
-            st.subheader("Period-wise Activities")
-            
-            # Show all periods (1-6) regardless of existing data
-            for period in range(1, 7):
-                period_str = f"Period {period}"
-                with st.expander(f"{period_str} - {period_str}"):
-                    if period_str in existing_periods:
-                        # Display existing activities
-                        c.execute("""
-                            SELECT activity_type, description, subject, section, 
-                                   student_count, load, source
-                            FROM faculty_worksheet
-                            WHERE faculty = ?
-                            AND date = ?
-                            AND period = ?
-                        """, (st.session_state.username, selected_date.strftime('%Y-%m-%d'), period_str))
-                        
-                        activities = c.fetchall()
-                        for activity in activities:
-                            st.write(f"**Activity:** {activity[0]}")
-                            st.write(f"**Description:** {activity[1]}")
-                            st.write(f"**Subject:** {activity[2]}")
-                            st.write(f"**Section:** {activity[3]}")
-                            st.write(f"**Student Count:** {activity[4]}")
-                            st.write(f"**Load:** {activity[5]}")
-                            st.write(f"**Source:** {activity[6]}")
-                    else:
-                        st.info("No activities recorded for this period")
-                        
-                    # Add activity button
-                    if st.button(f"Add Activity", key=f"add_activity_{period}"):
-                        st.session_state.adding_activity = True
-                        st.session_state.selected_period = period_str
-            
-            # Download button
-            if st.button("Download Daily Worksheet"):
-                # Generate Excel report
-                df = pd.read_sql_query("""
-                    SELECT period, activity_type, description, subject, section, 
-                           student_count, load, source
-                    FROM faculty_worksheet
-                    WHERE faculty = ?
-                    AND date = ?
-                    ORDER BY period
-                """, conn, params=(st.session_state.username, selected_date.strftime('%Y-%m-%d')))
-                
-                # Create Excel file
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Daily Worksheet')
-                    
-                # Offer download
-                st.download_button(
-                    label="📥 Download Excel",
-                    data=output.getvalue(),
-                    file_name=f"daily_worksheet_{selected_date.strftime('%Y-%m-%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-        except Exception as e:
-            st.error(f"Error loading worksheet: {str(e)}")
-        finally:
-            conn.close()
+def format_ist_time(dt):
+    """Format a datetime object to IST string"""
+    ist = pytz.timezone('Asia/Kolkata')
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        dt = pytz.utc.localize(dt)
+    return dt.astimezone(ist).strftime('%Y-%m-%d %H:%M:%S')
 
-
-
-
-#def main():
-    """Main application entry point with enhanced navigation"""
-    # Set page config
-    st.set_page_config(page_title="Faculty Attendance System", layout="wide")
-    
-    # Initialize session state
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-    
-    # Login handling
-    if not st.session_state.logged_in:
-        login()
-        return
-        
-    # Display logo and welcome message
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        st.image("logo.png", width=100)
-    with col2:
-        st.write(f"Welcome, {st.session_state.username}")
-    
-    # Navigation sidebar
-    with st.sidebar:
-        st.image("logo.png", width=150)
-        st.write(f"Welcome, {st.session_state.username}")
-        
-        st.subheader("Navigation")
-        
-        # Navigation options using radio
-        nav_option = st.radio(
-            "Navigation",
-            [
-                "Mark Attendance",
-                "View Statistics",
-                "Classes Timetable",
-                "My Work Tracker",  # This is where daily_worksheet will be called
-                "Reset Credentials"
-            ],
-            label_visibility="collapsed"
-        )
-        
-        if st.button("Logout", type="primary"):
-            st.session_state.logged_in = False
-            st.session_state.username = None
-            st.rerun()
-    
-    # Main content area based on navigation
-    if nav_option == "Mark Attendance":
-        mark_attendance_page()
-    elif nav_option == "View Statistics":
-        view_statistics()
-    elif nav_option == "Classes Timetable":
-        view_timetable()
-    elif nav_option == "My Work Tracker":
-        daily_worksheet()  # Call the daily_worksheet function here
-    elif nav_option == "Reset Credentials":
-        reset_credentials()
 
 def main():
     # Initialize the database
