@@ -3100,62 +3100,100 @@ def admin_page():
         view_data_tab()
     
     
+    
     with tab6:
-        st.subheader("Download Database and Export Data")
-        col1, col2 = st.columns(2)
+        download_data_tab()
 
-        with col1:
-            # Download database file
-            with open('attendance.db', 'rb') as f:
-                db_bytes = f.read()
-            st.download_button(
-                label="📥 Download Database File",
-                data=db_bytes,
-                file_name=f"attendance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
-                mime="application/x-sqlite3"
-            )
 
-        with col2:
-            # Download complete Excel workbook including sensitive data
-            if st.button("📊 Export All Data to Excel (Including Sensitive Info)"):
-                try:
+def download_data_tab():
+    """Enhanced download data tab with latest database file handling"""
+    st.subheader("Download Database and Export Data")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Create a copy of the current database file
+        if st.button("💾 Download Database File"):
+            try:
+                # Close any existing connections to ensure all changes are saved
+                conn = sqlite3.connect('attendance.db')
+                conn.close()
+                
+                # Create a copy of the database in memory
+                current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+                temp_db_path = f'temp_db_{current_time}.db'
+                
+                # Copy the database file
+                with open('attendance.db', 'rb') as src, open(temp_db_path, 'wb') as dst:
+                    dst.write(src.read())
+                
+                # Read the temporary file and serve it for download
+                with open(temp_db_path, 'rb') as f:
+                    db_data = f.read()
+                
+                # Clean up the temporary file
+                import os
+                os.remove(temp_db_path)
+                
+                # Offer the file for download with timestamp in filename
+                st.download_button(
+                    label="📥 Click to Download Database",
+                    data=db_data,
+                    file_name=f"attendance_db_{current_time}.db",
+                    mime="application/x-sqlite3"
+                )
+                
+            except Exception as e:
+                st.error(f"Error preparing database for download: {str(e)}")
+    
+    with col2:
+        if st.button("📊 Export All Data to Excel (Including Sensitive Info)"):
+            try:
+                # Create Excel file in memory
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    # Get all tables
                     conn = sqlite3.connect('attendance.db')
-                    output = BytesIO()
+                    cursor = conn.cursor()
                     
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        # Export students
-                        pd.read_sql_query("SELECT * FROM students", conn).to_excel(
-                            writer, sheet_name='Students', index=False)
-                        
-                        # Export faculty (including passwords)
-                        pd.read_sql_query("SELECT * FROM faculty", conn).to_excel(
-                            writer, sheet_name='Faculty', index=False)
-                        
-                        # Export attendance
-                        pd.read_sql_query("SELECT * FROM attendance", conn).to_excel(
-                            writer, sheet_name='Attendance', index=False)
-                        
-                        # Export section-subject mapping
-                        pd.read_sql_query("SELECT * FROM section_subject_mapping", conn).to_excel(
-                            writer, sheet_name='Subject Mapping', index=False)
-                        
-                        # Export faculty activities
-                        pd.read_sql_query("SELECT * FROM faculty_worksheet", conn).to_excel(
-                            writer, sheet_name='Faculty Activities', index=False)
+                    # Get list of all tables
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    tables = cursor.fetchall()
                     
-                    st.warning("⚠️ This export contains sensitive information including passwords. Handle with extreme caution!")
-                    st.download_button(
-                        label="📥 Download Complete Excel Export (Sensitive)",
-                        data=output.getvalue(),
-                        file_name=f"attendance_export_sensitive_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    # Export each table to a separate sheet
+                    for table in tables:
+                        table_name = table[0]
+                        df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+                        
+                        # Write to Excel
+                        df.to_excel(writer, sheet_name=table_name, index=False)
+                        
+                        # Format the sheet
+                        worksheet = writer.sheets[table_name]
+                        for idx, col in enumerate(df.columns, 1):
+                            cell = worksheet.cell(1, idx)
+                            cell.font = Font(bold=True)
+                            cell.fill = PatternFill(
+                                start_color='D3D3D3',
+                                end_color='D3D3D3',
+                                fill_type='solid'
+                            )
+                            worksheet.column_dimensions[get_column_letter(idx)].width = max(len(str(col)) + 5, 15)
                     
-                except Exception as e:
-                    st.error(f"Error exporting data: {str(e)}")
-                finally:
-                    if 'conn' in locals():
-                        conn.close()
+                    conn.close()
+                
+                # Offer the Excel file for download
+                current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+                st.download_button(
+                    label="📥 Download Complete Excel Export",
+                    data=output.getvalue(),
+                    file_name=f"attendance_system_export_{current_time}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+            except Exception as e:
+                st.error(f"Error exporting data: {str(e)}")
+
 
 def get_current_time_ist():
     """Gets the current time in IST with proper timezone handling"""
