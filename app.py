@@ -1912,26 +1912,31 @@ def get_table_data(table_name):
             conn.close()
 
 def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_plan):
-    """Modified to use IST for timestamps"""
+    """Modified to ensure correct IST date handling"""
     conn = sqlite3.connect('attendance.db')
     c = conn.cursor()
     
     try:
-        current_time = format_ist_time(get_current_time_ist())
+        # Get current time in IST
+        current_time_ist = get_current_time_ist()
+        current_time_str = format_ist_time(current_time_ist)
+        
+        # Debug logging
+        print(f"Debug: Marking attendance at IST time: {current_time_str}")
+        print(f"Debug: For date: {date}")
         
         # First insert into attendance table
         c.execute("""
             INSERT INTO attendance 
             (ht_number, date, period, status, faculty, subject, lesson_plan, created_at) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (ht_number, date, period, status, faculty, subject, lesson_plan, current_time))
+        """, (ht_number, date, period, status, faculty, subject, lesson_plan, current_time_str))
         
         # Get the section for this student
         c.execute("SELECT merged_section FROM students WHERE ht_number = ?", (ht_number,))
         section = c.fetchone()[0]
         
-        # Count total number of unique sections for this faculty and period on this day
-        # Regardless of subject
+        # Count total sections for load calculation
         c.execute("""
             WITH UniqueSections AS (
                 SELECT DISTINCT s.merged_section
@@ -1947,9 +1952,7 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
         total_sections = c.fetchone()[0]
         distributed_load = 1.0 / total_sections if total_sections > 0 else 1.0
         
-        print(f"Debug: Calculated load for {faculty} on {date} period {period}: {distributed_load} (Total sections: {total_sections})")
-        
-        # Get student count for this section
+        # Get student count
         c.execute("""
             SELECT COUNT(DISTINCT a.ht_number)
             FROM attendance a
@@ -1963,7 +1966,7 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
         
         student_count = c.fetchone()[0]
         
-        # Check if an entry exists in faculty_worksheet
+        # Check existing entry
         c.execute("""
             SELECT id 
             FROM faculty_worksheet 
@@ -1977,7 +1980,6 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
         
         existing = c.fetchone()
         
-        # Update or insert into faculty_worksheet
         if existing:
             c.execute("""
                 UPDATE faculty_worksheet 
@@ -1986,7 +1988,7 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
                     load = ?,
                     created_at = ?
                 WHERE id = ?
-            """, (student_count, lesson_plan, distributed_load, current_time, existing[0]))
+            """, (student_count, lesson_plan, distributed_load, current_time_str, existing[0]))
         else:
             c.execute("""
                 INSERT INTO faculty_worksheet 
@@ -1994,10 +1996,9 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
                  student_count, load, source, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Class', ?)
             """, (faculty, date, period, subject, lesson_plan, subject, section, 
-                 student_count, distributed_load, current_time))
+                 student_count, distributed_load, current_time_str))
         
-        # Update loads for ALL sections in this period for this faculty
-        # Regardless of subject
+        # Update loads for all sections
         c.execute("""
             UPDATE faculty_worksheet
             SET load = ?
@@ -2008,7 +2009,7 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
         """, (distributed_load, faculty, date, period))
         
         conn.commit()
-        print(f"Successfully updated faculty_worksheet with distributed load")
+        print(f"Successfully updated faculty_worksheet with distributed load at {current_time_str}")
         
     except Exception as e:
         print(f"Error marking attendance: {str(e)}")
@@ -2016,6 +2017,7 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
         raise e
     finally:
         conn.close()
+
 
 def daily_worksheet():
     """Enhanced daily worksheet view with proper IST timezone handling"""
@@ -2959,16 +2961,24 @@ def admin_page():
                         conn.close()
 
 def get_current_time_ist():
-    """Get current time in IST"""
+    """Get current time in IST with correct date handling"""
     ist = pytz.timezone('Asia/Kolkata')
-    return datetime.now(ist)
+    utc_now = datetime.now(pytz.UTC)
+    ist_now = utc_now.astimezone(ist)
+    return ist_now
 
 def format_ist_time(dt):
-    """Format a datetime object to IST string"""
+    """Format a datetime object to IST string with correct date handling"""
     ist = pytz.timezone('Asia/Kolkata')
-    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        dt = pytz.utc.localize(dt)
-    return dt.astimezone(ist).strftime('%Y-%m-%d %H:%M:%S')
+    if dt.tzinfo is None:
+        # If datetime is naive, assume it's in UTC
+        dt = pytz.UTC.localize(dt)
+    ist_time = dt.astimezone(ist)
+    return ist_time.strftime('%Y-%m-%d %H:%M:%S')
+
+def get_current_date_ist():
+    """Get current date in IST"""
+    return get_current_time_ist().date()
 
 
 def main():
