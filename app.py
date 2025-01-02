@@ -100,43 +100,6 @@ def migrate_db():
     finally:
         conn.close()
 
-def init_db():
-    conn = sqlite3.connect('attendance.db')
-    c = conn.cursor()
-    
-    # Create Students table
-    c.execute('''CREATE TABLE IF NOT EXISTS students
-                 (ht_number TEXT PRIMARY KEY, name TEXT, original_section TEXT, merged_section TEXT)''')
-    
-    # Create Faculty table
-    c.execute('''CREATE TABLE IF NOT EXISTS faculty
-                 (id INTEGER PRIMARY KEY, name TEXT, username TEXT UNIQUE, password TEXT)''')
-    
-    # Create Attendance table with created_at column
-    c.execute('''CREATE TABLE IF NOT EXISTS attendance
-                 (id INTEGER PRIMARY KEY, 
-                  ht_number TEXT, 
-                  date TEXT, 
-                  period TEXT, 
-                  status TEXT, 
-                  faculty TEXT, 
-                  subject TEXT, 
-                  lesson_plan TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Create Section-Subject-Mapping table
-    c.execute('''CREATE TABLE IF NOT EXISTS section_subject_mapping
-                 (id INTEGER PRIMARY KEY, section TEXT, subject_name TEXT)''')
-    
-    # Add default admin user if not exists
-    c.execute("INSERT OR IGNORE INTO faculty (username, password, name) VALUES (?, ?, ?)", 
-             ('admin', 'admin', 'Administrator'))
-             
-    conn.commit()
-    conn.close()
-    
-    # Run migration to ensure created_at column exists
-    migrate_db()
 
 def add_student(ht_number, name, original_section, merged_section):
     conn = sqlite3.connect('attendance.db')
@@ -1183,22 +1146,6 @@ def reset_credentials_page():
                 conn.close()
                 
 
-def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_plan):
-    """Modified to properly handle timestamp creation"""
-    conn = sqlite3.connect('attendance.db')
-    c = conn.cursor()
-    
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    c.execute("""
-        INSERT INTO attendance 
-        (ht_number, date, period, status, faculty, subject, lesson_plan, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (ht_number, date, period, status, faculty, subject, lesson_plan, current_time))
-    
-    conn.commit()
-    conn.close()
-  
 def get_faculty_classload(username, start_date=None, end_date=None):
     """Modified to handle cases where created_at might not exist"""
     try:
@@ -1409,208 +1356,6 @@ def show_class_timetable_page():
             conn.close()
 
     
-                
-
-
-def update_faculty_activity(username, date, period, activity_type, description):
-    """Update faculty activity with enhanced error handling"""
-    try:
-        conn = sqlite3.connect('attendance.db')
-        cursor = conn.cursor()
-        
-        # Create faculty_activities table if not exists
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS faculty_activities (
-                id INTEGER PRIMARY KEY,
-                faculty TEXT,
-                date TEXT,
-                period TEXT,
-                activity_type TEXT,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Get faculty name
-        cursor.execute("SELECT name FROM faculty WHERE username = ?", (username,))
-        faculty_name = cursor.fetchone()[0]
-        
-        # Format date properly
-        if isinstance(date, datetime):
-            date = date.strftime('%Y-%m-%d')
-            
-        # Check if activity exists
-        cursor.execute("""
-            SELECT id FROM faculty_activities 
-            WHERE faculty = ? AND date = ? AND period = ?
-        """, (faculty_name, date, period))
-        
-        existing = cursor.fetchone()
-        
-        if existing:
-            # Update existing activity
-            cursor.execute("""
-                UPDATE faculty_activities 
-                SET activity_type = ?, description = ?
-                WHERE id = ?
-            """, (activity_type, description, existing[0]))
-        else:
-            # Insert new activity
-            cursor.execute("""
-                INSERT INTO faculty_activities (faculty, date, period, activity_type, description)
-                VALUES (?, ?, ?, ?, ?)
-            """, (faculty_name, date, period, activity_type, description))
-            
-        conn.commit()
-        return True
-        
-    except Exception as e:
-        st.error(f"Error updating activity: {str(e)}")
-        return False
-    finally:
-        conn.close()
-
-
-
-
-
-def get_faculty_worksheet_data(username, start_date, end_date=None, view_type="Daily"):
-    """Get faculty worksheet data including all periods and activities with proper load distribution"""
-    try:
-        conn = sqlite3.connect('attendance.db')
-        cursor = conn.cursor()
-        
-        # Get faculty name
-        cursor.execute("SELECT name FROM faculty WHERE username = ?", (username,))
-        faculty_name = cursor.fetchone()[0]
-        
-        # Initialize worksheet data structure
-        worksheet_data = {
-            'total_classes': 0,
-            'total_hours': 0,
-            'unique_sections': set(),
-            'periods': {
-                f'P{i}': {
-                    'time': f'Period {i}',
-                    'subject': 'No Activity',
-                    'section': '-',
-                    'topic': '-',
-                    'status': 'Pending',
-                    'activity_type': 'None'
-                } for i in range(1, 7)
-            }
-        }
-        
-        # Convert dates to proper format
-        if isinstance(start_date, str):
-            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
-        if end_date and isinstance(end_date, str):
-            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
-        if not end_date:
-            end_date = start_date
-            
-        # Modified query to properly handle load distribution
-        query = """
-            WITH PeriodGroups AS (
-                SELECT 
-                    date,
-                    period,
-                    COUNT(DISTINCT subject) as subject_count
-                FROM (
-                    SELECT DISTINCT
-                        a.date,
-                        a.period,
-                        a.subject
-                    FROM attendance a
-                    WHERE a.faculty = ?
-                    AND a.date BETWEEN ? AND ?
-                )
-                GROUP BY date, period
-            ),
-            DetailedClasses AS (
-                SELECT 
-                    a.date,
-                    a.period,
-                    a.subject,
-                    GROUP_CONCAT(DISTINCT s.merged_section) as sections,
-                    COUNT(DISTINCT s.merged_section) as section_count,
-                    a.lesson_plan,
-                    pg.subject_count,
-                    ROUND(1.0/pg.subject_count, 2) as distributed_load
-                FROM attendance a
-                JOIN students s ON a.ht_number = s.ht_number
-                JOIN PeriodGroups pg ON a.date = pg.date AND a.period = pg.period
-                WHERE a.faculty = ?
-                AND a.date BETWEEN ? AND ?
-                GROUP BY a.date, a.period, a.subject
-            )
-            SELECT 
-                period,
-                subject,
-                sections,
-                lesson_plan,
-                distributed_load
-            FROM DetailedClasses
-        """
-        
-        cursor.execute(query, (
-            faculty_name, 
-            start_date.strftime('%Y-%m-%d'), 
-            end_date.strftime('%Y-%m-%d'),
-            faculty_name,
-            start_date.strftime('%Y-%m-%d'),
-            end_date.strftime('%Y-%m-%d')
-        ))
-        
-        total_load = 0
-        for row in cursor.fetchall():
-            period, subject, sections, lesson_plan, dist_load = row
-            worksheet_data['periods'][period] = {
-                'time': f'Period {period[1]}',
-                'subject': subject,
-                'section': sections,
-                'topic': lesson_plan,
-                'status': 'Completed',
-                'activity_type': 'Class',
-                'load': dist_load
-            }
-            total_load += dist_load
-            worksheet_data['unique_sections'].update(sections.split(','))
-            
-        worksheet_data['total_classes'] = total_load
-            
-        # Get other activities
-        query = """
-            SELECT period, activity_type, description
-            FROM faculty_activities
-            WHERE faculty = ? AND date BETWEEN ? AND ?
-        """
-        
-        cursor.execute(query, (faculty_name, start_date.strftime('%Y-%m-%d'),
-                             end_date.strftime('%Y-%m-%d')))
-                             
-        for row in cursor.fetchall():
-            period, activity_type, description = row
-            if period in worksheet_data['periods']:
-                worksheet_data['periods'][period] = {
-                    'time': f'Period {period[1]}',
-                    'subject': activity_type,
-                    'section': '-',
-                    'topic': description,
-                    'status': 'Completed',
-                    'activity_type': 'Other',
-                    'load': 1.0
-                }
-                worksheet_data['total_hours'] += 1
-        
-        return worksheet_data
-        
-    except Exception as e:
-        st.error(f"Error getting worksheet data: {str(e)}")
-        return None
-    finally:
-        conn.close()
-
 
 
 def show_faculty_classload():
@@ -1782,7 +1527,7 @@ def show_faculty_classload():
                                 submitted = st.form_submit_button("Save Activity")
                                 if submitted:
                                     if activity_type != "Select Activity" and description:
-                                        if update_faculty_activity(
+                                        if update_faculty_worksheet(
                                             st.session_state.username,
                                             selected_date,
                                             period,
@@ -1830,178 +1575,217 @@ def show_faculty_classload():
             st.info("No worksheet data found for the selected date")
 
 
-def view_faculty_worksheet_stats():
-    """Display faculty worksheet statistics with filtering and export capabilities"""
-    st.subheader("Faculty Worksheet Statistics")
+
+
+
+def init_db():
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+
+    # Create Students table
+    c.execute('''CREATE TABLE IF NOT EXISTS students
+                 (ht_number TEXT PRIMARY KEY, name TEXT, original_section TEXT, merged_section TEXT)''')
     
-    # Use the new date range selector
-    selected_date, end_date = date_range_selector("faculty_stats")
+    # Create Faculty table
+    c.execute('''CREATE TABLE IF NOT EXISTS faculty
+                 (id INTEGER PRIMARY KEY, name TEXT, username TEXT UNIQUE, password TEXT)''')
     
-    if st.button("Generate Report", type="primary"):
-        try:
-            conn = sqlite3.connect('attendance.db')
-            cursor = conn.cursor()
+    # Create Attendance table with created_at column
+    # c.execute('DROP TABLE IF EXISTS faculty_worksheet')
+    c.execute('''CREATE TABLE IF NOT EXISTS attendance
+                 (id INTEGER PRIMARY KEY, 
+                  ht_number TEXT, 
+                  date TEXT, 
+                  period TEXT, 
+                  status TEXT, 
+                  faculty TEXT, 
+                  subject TEXT, 
+                  lesson_plan TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # Create Section-Subject-Mapping table
+    c.execute('''CREATE TABLE IF NOT EXISTS section_subject_mapping
+                 (id INTEGER PRIMARY KEY, section TEXT, subject_name TEXT)''')
+    
+    # Drop and recreate faculty_worksheet table with additional columns
+
+    c.execute('''CREATE TABLE IF NOT EXISTS faculty_worksheet
+                 (id INTEGER PRIMARY KEY,
+                  faculty TEXT,
+                  date TEXT,
+                  period TEXT,
+                  activity_type TEXT,
+                  description TEXT,
+                  subject TEXT,
+                  section TEXT,
+                  student_count INTEGER DEFAULT 0,
+                  load REAL DEFAULT 1.0,
+                  source TEXT DEFAULT 'Worksheet',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # Add default admin user if not exists
+    c.execute("INSERT OR IGNORE INTO faculty (username, password, name) VALUES (?, ?, ?)", 
+             ('admin', 'admin', 'Administrator'))
+             
+    conn.commit()
+    conn.close()
+
+
+
+
+
+def get_faculty_worksheet_data(username, start_date, end_date=None, view_type="Daily"):
+    """Get faculty worksheet data with improved load calculation"""
+    try:
+        conn = sqlite3.connect('attendance.db')
+        cursor = conn.cursor()
+        
+        # Get faculty name
+        cursor.execute("SELECT name FROM faculty WHERE username = ?", (username,))
+        faculty_name = cursor.fetchone()[0]
+        
+        # Initialize worksheet data structure
+        worksheet_data = {
+            'total_classes': 0,
+            'total_hours': 0,
+            'unique_sections': set(),
+            'periods': {
+                f'P{i}': {
+                    'time': f'Period {i}',
+                    'subject': 'No Activity',
+                    'section': '-',
+                    'topic': '-',
+                    'status': 'Pending',
+                    'activity_type': 'None',
+                    'load': 0
+                } for i in range(1, 7)
+            }
+        }
+        
+        # Convert dates to proper format
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        if end_date and isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        if not end_date:
+            end_date = start_date
             
-            # Query to get faculty workload statistics
-            query = """
-            WITH FacultyClasses AS (
+        # Get class data with proper load calculation
+        query = """
+            WITH PeriodGroups AS (
                 SELECT 
-                    f.name as faculty_name,
-                    COUNT(DISTINCT a.date || a.period) as classes_conducted,
-                    COUNT(DISTINCT s.merged_section) as unique_sections,
-                    COUNT(DISTINCT a.subject) as unique_subjects,
-                    SUM(CASE 
-                        WHEN a.status = 'P' THEN 1.0 
-                        ELSE 0.0 
-                    END) / COUNT(*) * 100 as attendance_percentage
-                FROM faculty f
-                LEFT JOIN attendance a ON f.name = a.faculty
-                LEFT JOIN students s ON a.ht_number = s.ht_number
-                WHERE a.date BETWEEN ? AND ?
-                GROUP BY f.name
+                    date,
+                    period,
+                    COUNT(DISTINCT subject) as subject_count
+                FROM (
+                    SELECT DISTINCT
+                        a.date,
+                        a.period,
+                        a.subject
+                    FROM attendance a
+                    WHERE a.faculty = ?
+                    AND a.date BETWEEN ? AND ?
+                )
+                GROUP BY date, period
             ),
-            FacultyActivities AS (
+            DetailedClasses AS (
                 SELECT 
-                    faculty,
-                    COUNT(*) as other_activities,
-                    COUNT(DISTINCT activity_type) as unique_activities
-                FROM faculty_activities
-                WHERE date BETWEEN ? AND ?
-                GROUP BY faculty
+                    a.date,
+                    a.period,
+                    a.subject,
+                    GROUP_CONCAT(DISTINCT s.merged_section) as sections,
+                    COUNT(DISTINCT s.merged_section) as section_count,
+                    a.lesson_plan,
+                    pg.subject_count,
+                    ROUND(1.0/pg.subject_count, 2) as distributed_load
+                FROM attendance a
+                JOIN students s ON a.ht_number = s.ht_number
+                JOIN PeriodGroups pg ON a.date = pg.date AND a.period = pg.period
+                WHERE a.faculty = ?
+                AND a.date BETWEEN ? AND ?
+                GROUP BY a.date, a.period, a.subject
             )
             SELECT 
-                fc.faculty_name,
-                COALESCE(fc.classes_conducted, 0) as classes_conducted,
-                COALESCE(fa.other_activities, 0) as other_activities,
-                COALESCE(fc.unique_sections, 0) as unique_sections,
-                COALESCE(fc.unique_subjects, 0) as unique_subjects,
-                COALESCE(fa.unique_activities, 0) as unique_activities,
-                ROUND(COALESCE(fc.attendance_percentage, 0), 2) as avg_attendance,
-                COALESCE(fc.classes_conducted, 0) + COALESCE(fa.other_activities, 0) as total_load
-            FROM FacultyClasses fc
-            LEFT JOIN FacultyActivities fa ON fc.faculty_name = fa.faculty
-            ORDER BY total_load DESC
-            """
+                period,
+                subject,
+                sections,
+                lesson_plan,
+                distributed_load
+            FROM DetailedClasses
+        """
+        
+        cursor.execute(query, (
+            faculty_name, 
+            start_date.strftime('%Y-%m-%d'), 
+            end_date.strftime('%Y-%m-%d'),
+            faculty_name,
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d')
+        ))
+        
+        # Process class data
+        class_load = 0
+        for row in cursor.fetchall():
+            period, subject, sections, lesson_plan, dist_load = row
+            worksheet_data['periods'][period] = {
+                'time': f'Period {period[1]}',
+                'subject': subject,
+                'section': sections,
+                'topic': lesson_plan,
+                'status': 'Completed',
+                'activity_type': 'Class',
+                'load': dist_load
+            }
+            class_load += dist_load
+            worksheet_data['unique_sections'].update(sections.split(','))
             
-            cursor.execute(query, (
-                selected_date.strftime('%Y-%m-%d'),
-                end_date.strftime('%Y-%m-%d'),
-                selected_date.strftime('%Y-%m-%d'),
-                end_date.strftime('%Y-%m-%d')
-            ))
+        worksheet_data['total_classes'] = class_load
             
-            
-            results = cursor.fetchall()
-            
-            if results:
-                # Create DataFrame
-                df = pd.DataFrame(results, columns=[
-                    'Faculty Name',
-                    'Classes Conducted',
-                    'Other Activities',
-                    'Unique Sections',
-                    'Unique Subjects',
-                    'Unique Activity Types',
-                    'Avg Attendance %',
-                    'Total Load'
-                ])
-                
-                # Display summary metrics
-                st.write("### Overall Summary")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Faculty", len(df))
-                with col2:
-                    st.metric("Total Classes", df['Classes Conducted'].sum())
-                with col3:
-                    st.metric("Total Activities", df['Other Activities'].sum())
-                with col4:
-                    st.metric("Avg Load", f"{df['Total Load'].mean():.2f}")
-                
-                # Display detailed statistics
-                st.write("### Faculty-wise Statistics")
-                st.dataframe(
-                    df,
-                    column_config={
-                        'Faculty Name': st.column_config.TextColumn('Faculty Name', width=200),
-                        'Classes Conducted': st.column_config.NumberColumn('Classes', width=100),
-                        'Other Activities': st.column_config.NumberColumn('Activities', width=100),
-                        'Unique Sections': st.column_config.NumberColumn('Sections', width=100),
-                        'Unique Subjects': st.column_config.NumberColumn('Subjects', width=100),
-                        'Unique Activity Types': st.column_config.NumberColumn('Activity Types', width=120),
-                        'Avg Attendance %': st.column_config.NumberColumn('Attendance %', format="%.2f%%", width=120),
-                        'Total Load': st.column_config.NumberColumn('Total Load', format="%.2f", width=100)
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                # Export to Excel
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    # Write main statistics
-                    df.to_excel(writer, sheet_name='Faculty Statistics', index=False)
-                    
-                    # Add summary sheet
-                    summary_df = pd.DataFrame([{
-                        'Metric': 'Total Faculty',
-                        'Value': len(df)
-                    }, {
-                        'Metric': 'Total Classes',
-                        'Value': df['Classes Conducted'].sum()
-                    }, {
-                        'Metric': 'Total Activities',
-                        'Value': df['Other Activities'].sum()
-                    }, {
-                        'Metric': 'Average Load',
-                        'Value': df['Total Load'].mean()
-                    }])
-                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                    
-                    # Format worksheets
-                    for sheet in writer.sheets.values():
-                        for column in sheet.columns:
-                            max_length = max(len(str(cell.value or '')) for cell in column)
-                            sheet.column_dimensions[get_column_letter(column[0].column)].width = min(50, max(12, max_length + 2))
-                
-                st.download_button(
-                    label="📥 Download Complete Report",
-                    data=output.getvalue(),
-                    file_name=f"faculty_worksheet_stats_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                # Display visualization
-                st.write("### Workload Distribution")
-                fig = {
-                    'data': [{
-                        'type': 'bar',
-                        'name': 'Classes',
-                        'x': df['Faculty Name'],
-                        'y': df['Classes Conducted'],
-                    }, {
-                        'type': 'bar',
-                        'name': 'Activities',
-                        'x': df['Faculty Name'],
-                        'y': df['Other Activities'],
-                    }],
-                    'layout': {
-                        'barmode': 'stack',
-                        'title': 'Faculty Workload Distribution',
-                        'xaxis': {'title': 'Faculty'},
-                        'yaxis': {'title': 'Count'}
+        # Get other activities from faculty_worksheet
+        query = """
+            SELECT period, activity_type, description
+            FROM faculty_worksheet
+            WHERE faculty = ? 
+            AND date BETWEEN ? AND ?
+        """
+        
+        cursor.execute(query, (
+            faculty_name, 
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d')
+        ))
+        
+        # Process activity data
+        activity_load = 0
+        for row in cursor.fetchall():
+            period, activity_type, description = row
+            if period in worksheet_data['periods']:
+                # Only count if no class is already recorded for this period
+                if worksheet_data['periods'][period]['activity_type'] == 'None':
+                    worksheet_data['periods'][period] = {
+                        'time': f'Period {period[1]}',
+                        'subject': activity_type,
+                        'section': '-',
+                        'topic': description,
+                        'status': 'Completed',
+                        'activity_type': 'Other',
+                        'load': 1.0
                     }
-                }
-                st.plotly_chart(fig, use_container_width=True)
-                
-            else:
-                st.info("No data found for the selected date range")
-            
-        except Exception as e:
-            st.error(f"Error generating faculty statistics: {str(e)}")
-        finally:
-            if 'conn' in locals():
-                conn.close()
+                    activity_load += 1
+        
+        worksheet_data['total_hours'] = activity_load
+        
+        return worksheet_data
+        
+    except Exception as e:
+        st.error(f"Error getting worksheet data: {str(e)}")
+        return None
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+
 
 def generate_template_excel(table_type):
     """Generate template Excel file for data import"""
@@ -2120,8 +1904,119 @@ def get_table_data(table_name):
         if 'conn' in locals():
             conn.close()
 
+def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_plan):
+    """Modified to distribute load based on total sections per period per day"""
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+    
+    try:
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # First insert into attendance table
+        c.execute("""
+            INSERT INTO attendance 
+            (ht_number, date, period, status, faculty, subject, lesson_plan, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ht_number, date, period, status, faculty, subject, lesson_plan, current_time))
+        
+        # Get the section for this student
+        c.execute("SELECT merged_section FROM students WHERE ht_number = ?", (ht_number,))
+        section = c.fetchone()[0]
+        
+        # Count total number of unique sections for this faculty and period on this day
+        # Regardless of subject
+        c.execute("""
+            WITH UniqueSections AS (
+                SELECT DISTINCT s.merged_section
+                FROM attendance a
+                JOIN students s ON a.ht_number = s.ht_number
+                WHERE a.faculty = ? 
+                AND a.date = ? 
+                AND a.period = ?
+            )
+            SELECT COUNT(*) FROM UniqueSections
+        """, (faculty, date, period))
+        
+        total_sections = c.fetchone()[0]
+        distributed_load = 1.0 / total_sections if total_sections > 0 else 1.0
+        
+        print(f"Debug: Calculated load for {faculty} on {date} period {period}: {distributed_load} (Total sections: {total_sections})")
+        
+        # Get student count for this section
+        c.execute("""
+            SELECT COUNT(DISTINCT a.ht_number)
+            FROM attendance a
+            JOIN students s ON a.ht_number = s.ht_number
+            WHERE a.faculty = ? 
+            AND a.date = ? 
+            AND a.period = ?
+            AND a.subject = ?
+            AND s.merged_section = ?
+        """, (faculty, date, period, subject, section))
+        
+        student_count = c.fetchone()[0]
+        
+        # Check if an entry exists in faculty_worksheet
+        c.execute("""
+            SELECT id 
+            FROM faculty_worksheet 
+            WHERE faculty = ? 
+            AND date = ? 
+            AND period = ? 
+            AND subject = ? 
+            AND section = ?
+            AND source = 'Class'
+        """, (faculty, date, period, subject, section))
+        
+        existing = c.fetchone()
+        
+        if existing:
+            # Update existing entry with new load calculation
+            c.execute("""
+                UPDATE faculty_worksheet 
+                SET student_count = ?,
+                    description = ?,
+                    load = ?,
+                    created_at = ?
+                WHERE id = ?
+            """, (student_count, lesson_plan, distributed_load, current_time, existing[0]))
+        else:
+            # Insert new entry with calculated load
+            c.execute("""
+                INSERT INTO faculty_worksheet 
+                (faculty, date, period, activity_type, description, subject, section, 
+                 student_count, load, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Class', ?)
+            """, (faculty, date, period, subject, lesson_plan, subject, section, 
+                 student_count, distributed_load, current_time))
+        
+        # Update loads for ALL sections in this period for this faculty
+        # Regardless of subject
+        c.execute("""
+            UPDATE faculty_worksheet
+            SET load = ?
+            WHERE faculty = ?
+            AND date = ?
+            AND period = ?
+            AND source = 'Class'
+        """, (distributed_load, faculty, date, period))
+        
+        conn.commit()
+        print(f"Successfully updated faculty_worksheet with distributed load")
+        
+    except Exception as e:
+        print(f"Error marking attendance: {str(e)}")
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+
+
+
 def view_faculty_worksheet_stats():
-    """Display faculty worksheet statistics with filtering and export capabilities"""
+    """Modified to use faculty_worksheet table as single source of truth"""
     st.subheader("Faculty Worksheet Statistics")
     
     # Use the date range selector
@@ -2132,44 +2027,44 @@ def view_faculty_worksheet_stats():
             conn = sqlite3.connect('attendance.db')
             cursor = conn.cursor()
             
-            # Query to get faculty workload statistics
+            # Updated query to use faculty_worksheet table
             query = """
-            WITH FacultyClasses AS (
+            WITH FacultyStats AS (
                 SELECT 
                     f.name as faculty_name,
-                    COUNT(DISTINCT a.date || a.period) as classes_conducted,
-                    COUNT(DISTINCT s.merged_section) as unique_sections,
-                    COUNT(DISTINCT a.subject) as unique_subjects,
-                    SUM(CASE 
-                        WHEN a.status = 'P' THEN 1.0 
-                        ELSE 0.0 
-                    END) / NULLIF(COUNT(*), 0) * 100 as attendance_percentage
+                    -- Classes from attendance records
+                    COALESCE(SUM(CASE WHEN fw.source = 'Class' THEN fw.load ELSE 0 END), 0) as net_classes_conducted,
+                    -- Other activities
+                    COALESCE(SUM(CASE WHEN fw.source = 'Worksheet' THEN fw.load ELSE 0 END), 0) as other_activities,
+                    -- Unique sections
+                    COUNT(DISTINCT fw.section) as unique_sections,
+                    -- Unique subjects
+                    COUNT(DISTINCT fw.subject) as unique_subjects,
+                    -- Unique activity types
+                    COUNT(DISTINCT CASE WHEN fw.source = 'Worksheet' THEN fw.activity_type END) as unique_activity_types,
+                    -- Total students
+                    SUM(COALESCE(fw.student_count, 0)) as total_students,
+                    -- Class dates
+                    COUNT(DISTINCT CASE WHEN fw.source = 'Class' THEN fw.date END) as class_dates,
+                    -- Activity dates
+                    COUNT(DISTINCT CASE WHEN fw.source = 'Worksheet' THEN fw.date END) as activity_dates
                 FROM faculty f
-                LEFT JOIN attendance a ON f.name = a.faculty
-                LEFT JOIN students s ON a.ht_number = s.ht_number
-                WHERE a.date BETWEEN ? AND ?
+                LEFT JOIN faculty_worksheet fw ON f.name = fw.faculty 
+                    AND fw.date BETWEEN ? AND ?
                 GROUP BY f.name
-            ),
-            FacultyActivities AS (
-                SELECT 
-                    faculty,
-                    COUNT(*) as other_activities,
-                    COUNT(DISTINCT activity_type) as unique_activities
-                FROM faculty_activities
-                WHERE date BETWEEN ? AND ?
-                GROUP BY faculty
             )
             SELECT 
-                fc.faculty_name,
-                COALESCE(fc.classes_conducted, 0) as classes_conducted,
-                COALESCE(fa.other_activities, 0) as other_activities,
-                COALESCE(fc.unique_sections, 0) as unique_sections,
-                COALESCE(fc.unique_subjects, 0) as unique_subjects,
-                COALESCE(fa.unique_activities, 0) as unique_activities,
-                ROUND(COALESCE(fc.attendance_percentage, 0), 2) as avg_attendance,
-                COALESCE(fc.classes_conducted, 0) + COALESCE(fa.other_activities, 0) as total_load
-            FROM FacultyClasses fc
-            LEFT JOIN FacultyActivities fa ON fc.faculty_name = fa.faculty
+                faculty_name,
+                net_classes_conducted,
+                other_activities,
+                unique_sections,
+                unique_subjects,
+                unique_activity_types,
+                ROUND(net_classes_conducted + other_activities, 2) as total_load,
+                total_students,
+                class_dates,
+                activity_dates
+            FROM FacultyStats
             ORDER BY total_load DESC;
             """
             
@@ -2177,23 +2072,22 @@ def view_faculty_worksheet_stats():
             start_date_str = selected_date.strftime('%Y-%m-%d')
             end_date_str = end_date.strftime('%Y-%m-%d')
             
-            # Fixed: Added proper tuple for parameters
-            params = (start_date_str, end_date_str, start_date_str, end_date_str)
-            cursor.execute(query, params)
-            
+            cursor.execute(query, (start_date_str, end_date_str))
             results = cursor.fetchall()
             
             if results:
                 # Create DataFrame with proper column names
                 df = pd.DataFrame(results, columns=[
                     'Faculty Name',
-                    'Classes Conducted',
+                    'Net Classes Conducted',
                     'Other Activities',
                     'Unique Sections',
                     'Unique Subjects',
                     'Unique Activity Types',
-                    'Avg Attendance %',
-                    'Total Load'
+                    'Total Load',
+                    'Total Students',
+                    'Class Dates',
+                    'Activity Dates'
                 ])
                 
                 # Display summary metrics
@@ -2202,7 +2096,7 @@ def view_faculty_worksheet_stats():
                 with col1:
                     st.metric("Total Faculty", len(df))
                 with col2:
-                    st.metric("Total Classes", df['Classes Conducted'].sum())
+                    st.metric("Net Classes", f"{df['Net Classes Conducted'].sum():.2f}")
                 with col3:
                     st.metric("Total Activities", df['Other Activities'].sum())
                 with col4:
@@ -2211,6 +2105,58 @@ def view_faculty_worksheet_stats():
                 # Display the statistics table
                 st.write("### Faculty-wise Statistics")
                 st.dataframe(df)
+                
+                # Get detailed activity log
+                detailed_query = """
+                SELECT 
+                    faculty,
+                    date,
+                    period,
+                    COALESCE(subject, activity_type) as activity,
+                    section,
+                    description,
+                    student_count,
+                    load,
+                    source,
+                    created_at
+                FROM faculty_worksheet
+                WHERE date BETWEEN ? AND ?
+                ORDER BY date DESC, period ASC, faculty
+                """
+                
+                detailed_df = pd.read_sql_query(detailed_query, conn, params=(start_date_str, end_date_str))
+                
+                if not detailed_df.empty:
+                    st.write("### Detailed Activity Log")
+                    st.dataframe(
+                        detailed_df,
+                        column_config={
+                            'faculty': st.column_config.TextColumn('Faculty', width=150),
+                            'date': st.column_config.TextColumn('Date', width=100),
+                            'period': st.column_config.TextColumn('Period', width=80),
+                            'activity': st.column_config.TextColumn('Activity/Subject', width=150),
+                            'section': st.column_config.TextColumn('Section', width=100),
+                            'description': st.column_config.TextColumn('Description/Plan', width=300),
+                            'student_count': st.column_config.NumberColumn('Students', width=80),
+                            'load': st.column_config.NumberColumn('Load', width=80, format="%.2f"),
+                            'source': st.column_config.TextColumn('Type', width=100),
+                            'created_at': st.column_config.TextColumn('Timestamp', width=150)
+                        }
+                    )
+                
+                # Export functionality
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name='Faculty Statistics', index=False)
+                    if not detailed_df.empty:
+                        detailed_df.to_excel(writer, sheet_name='Detailed Log', index=False)
+                
+                st.download_button(
+                    label="📥 Download Complete Report",
+                    data=buffer.getvalue(),
+                    file_name=f"faculty_worksheet_stats_{selected_date.strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
                 
             else:
                 st.info("No data found for the selected date range")
@@ -2221,8 +2167,177 @@ def view_faculty_worksheet_stats():
             if 'conn' in locals():
                 conn.close()
 
+
+
+
+
+
+def update_faculty_worksheet(username, date, period, activity_type, description):
+    """Update faculty worksheet with enhanced error handling and proper data saving"""
+    try:
+        conn = sqlite3.connect('attendance.db')
+        cursor = conn.cursor()
+        
+        # Get faculty name
+        cursor.execute("SELECT name FROM faculty WHERE username = ?", (username,))
+        faculty_name = cursor.fetchone()
+        
+        if not faculty_name:
+            raise Exception("Faculty not found")
+            
+        faculty_name = faculty_name[0]
+        
+        # Format date properly
+        if isinstance(date, datetime):
+            date = date.strftime('%Y-%m-%d')
+            
+        # Check if worksheet entry exists
+        cursor.execute("""
+            SELECT id FROM faculty_worksheet 
+            WHERE faculty = ? AND date = ? AND period = ?
+        """, (faculty_name, date, period))
+        
+        existing = cursor.fetchone()
+        
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        if existing:
+            # Update existing worksheet entry
+            cursor.execute("""
+                UPDATE faculty_worksheet 
+                SET activity_type = ?, 
+                    description = ?,
+                    load = 1.0,
+                    created_at = ?
+                WHERE id = ?
+            """, (activity_type, description, current_time, existing[0]))
+        else:
+            # Insert new worksheet entry
+            cursor.execute("""
+                INSERT INTO faculty_worksheet 
+                (faculty, date, period, activity_type, description, load, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (faculty_name, date, period, activity_type, description, 1.0, current_time))
+            
+        conn.commit()
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating worksheet: {str(e)}")
+        return False
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+
+
+def generate_table_template(table_name):
+    """Generate template Excel file for any table"""
+    try:
+        conn = sqlite3.connect('attendance.db')
+        cursor = conn.cursor()
+        
+        # Get column information
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        # Create template DataFrame
+        df = pd.DataFrame(columns=columns)
+        
+        # Add example row based on table structure
+        example_row = {}
+        for col in columns:
+            if col == 'id':  # Skip ID column in template
+                continue
+            elif 'date' in col.lower():
+                example_row[col] = datetime.now().strftime('%Y-%m-%d')
+            elif 'created_at' in col.lower():
+                continue  # Skip created_at as it's auto-generated
+            elif col == 'status':
+                example_row[col] = 'P'
+            elif col == 'load':
+                example_row[col] = 1.0
+            elif col == 'student_count':
+                example_row[col] = 0
+            elif col == 'source':
+                example_row[col] = 'Class'
+            else:
+                example_row[col] = f'Example {col}'
+        
+        # Add example row if we have data
+        if example_row:
+            df.loc[0] = example_row
+        
+        # Create Excel writer object
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name=table_name, index=False)
+            
+            # Format the template
+            worksheet = writer.sheets[table_name]
+            for idx, col in enumerate(df.columns, 1):
+                worksheet.column_dimensions[get_column_letter(idx)].width = max(len(col) + 5, 15)
+            
+            # Add header formatting
+            for cell in worksheet[1]:
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color='D3D3D3', end_color='D3D3D3', fill_type='solid')
+        
+        return output.getvalue()
+        
+    except Exception as e:
+        print(f"Error generating template: {str(e)}")
+        return None
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+def bulk_upload_data(table_name, df):
+    """Handle bulk data upload for any table"""
+    try:
+        conn = sqlite3.connect('attendance.db')
+        cursor = conn.cursor()
+        
+        # Get column information
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        table_columns = [col[1] for col in cursor.fetchall()]
+        
+        # Remove id and created_at columns if they exist
+        upload_columns = [col for col in table_columns if col not in ['id', 'created_at']]
+        
+        # Verify DataFrame columns match table columns
+        missing_cols = set(upload_columns) - set(df.columns)
+        if missing_cols:
+            return False, f"Missing required columns: {', '.join(missing_cols)}"
+        
+        # Prepare data for insertion
+        df = df[upload_columns]  # Only keep relevant columns
+        
+        # Begin transaction
+        conn.execute("BEGIN TRANSACTION")
+        
+        # Prepare INSERT statement
+        placeholders = ','.join(['?' for _ in upload_columns])
+        columns = ','.join(upload_columns)
+        insert_sql = f"INSERT OR REPLACE INTO {table_name} ({columns}) VALUES ({placeholders})"
+        
+        # Insert data
+        cursor.executemany(insert_sql, df.values.tolist())
+        
+        # Commit transaction
+        conn.commit()
+        return True, f"Successfully uploaded {len(df)} records to {table_name}"
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error uploading data: {str(e)}"
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
 def view_data_tab():
-    """Enhanced view data tab with editable tables and proper database updates"""
+    """Enhanced view data tab with multi-sheet workbook bulk upload capability"""
     st.subheader("View Database Tables")
     
     tables = get_all_tables()
@@ -2233,69 +2348,263 @@ def view_data_tab():
     )
     
     if selected_table:
-        # Get original data
-        df = get_table_data(selected_table)
+        # Create tabs for different operations
+        tab1, tab2 = st.tabs(["View & Edit Data", "Bulk Upload"])
         
-        if not df.empty:
-            # Store the original data in session state to compare changes
-            if f"original_{selected_table}" not in st.session_state:
-                st.session_state[f"original_{selected_table}"] = df.copy()
-                
-            edited_df = st.data_editor(
-                df,
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
-                key=f"editor_{selected_table}"
-            )
+        with tab1:
+            # View & Edit functionality remains unchanged
+            df = get_table_data(selected_table)
             
-            if st.button("Save Changes", type="primary"):
+            if not df.empty:
+                if f"original_{selected_table}" not in st.session_state:
+                    st.session_state[f"original_{selected_table}"] = df.copy()
+                
+                edited_df = st.data_editor(
+                    df,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"editor_{selected_table}"
+                )
+                
+                if st.button("Save Changes", type="primary"):
+                    try:
+                        conn = sqlite3.connect('attendance.db')
+                        cursor = conn.cursor()
+                        
+                        primary_key_col = df.columns[0]
+                        original_df = st.session_state[f"original_{selected_table}"]
+                        modified_mask = (edited_df != original_df).any(axis=1)
+                        modified_rows = edited_df[modified_mask]
+                        
+                        if not modified_rows.empty:
+                            conn.execute("BEGIN TRANSACTION")
+                            
+                            for idx, row in modified_rows.iterrows():
+                                columns = edited_df.columns
+                                set_clause = ", ".join([f"{col} = ?" for col in columns])
+                                query = f"UPDATE {selected_table} SET {set_clause} WHERE {primary_key_col} = ?"
+                                
+                                values = [row[col] for col in columns]
+                                values.append(row[primary_key_col])
+                                
+                                cursor.execute(query, values)
+                            
+                            conn.commit()
+                            st.success(f"Successfully updated {len(modified_rows)} rows!")
+                            st.session_state[f"original_{selected_table}"] = edited_df.copy()
+                            st.rerun()
+                        else:
+                            st.info("No changes detected")
+                            
+                    except Exception as e:
+                        if 'conn' in locals():
+                            conn.rollback()
+                        st.error(f"Error saving changes: {str(e)}")
+                    finally:
+                        if 'conn' in locals():
+                            conn.close()
+        
+        with tab2:
+            st.write("### Bulk Upload Data")
+            st.info("You can either upload data for a single table or upload a workbook containing multiple tables as separate sheets.")
+            
+            # Option to download complete template
+            if st.button("📥 Download Complete Template"):
                 try:
                     conn = sqlite3.connect('attendance.db')
                     cursor = conn.cursor()
                     
-                    # Get the primary key column (usually the first column)
-                    primary_key_col = df.columns[0]
-                    
-                    # Compare original and edited dataframes
-                    original_df = st.session_state[f"original_{selected_table}"]
-                    
-                    # Find modified rows
-                    modified_mask = (edited_df != original_df).any(axis=1)
-                    modified_rows = edited_df[modified_mask]
-                    
-                    if not modified_rows.empty:
-                        for idx, row in modified_rows.iterrows():
-                            # Build dynamic UPDATE query
-                            columns = edited_df.columns
-                            set_clause = ", ".join([f"{col} = ?" for col in columns])
-                            query = f"UPDATE {selected_table} SET {set_clause} WHERE {primary_key_col} = ?"
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        for table in tables:
+                            # Get column information for each table
+                            cursor.execute(f"PRAGMA table_info({table})")
+                            columns = [col[1] for col in cursor.fetchall() 
+                                     if col[1] not in ['id', 'created_at']]
                             
-                            # Prepare values for the query
-                            values = [row[col] for col in columns]  # All column values
-                            values.append(row[primary_key_col])     # Add primary key value for WHERE clause
+                            # Create example data
+                            example_data = {}
+                            for col in columns:
+                                if 'date' in col.lower():
+                                    example_data[col] = datetime.now().strftime('%Y-%m-%d')
+                                elif col == 'status':
+                                    example_data[col] = 'P'
+                                elif col == 'load':
+                                    example_data[col] = 1.0
+                                elif col == 'student_count':
+                                    example_data[col] = 0
+                                elif col == 'source':
+                                    example_data[col] = 'Class'
+                                else:
+                                    example_data[col] = f'Example {col}'
                             
-                            # Execute update
-                            cursor.execute(query, values)
-                        
-                        conn.commit()
-                        st.success(f"Successfully updated {len(modified_rows)} rows!")
-                        
-                        # Update session state with new data
-                        st.session_state[f"original_{selected_table}"] = edited_df.copy()
-                        
-                        # Refresh the page to show updated data
-                        st.rerun()
-                    else:
-                        st.info("No changes detected")
-                        
-                except sqlite3.Error as e:
-                    st.error(f"Database error: {str(e)}")
+                            template_df = pd.DataFrame([example_data])
+                            
+                            # Write to sheet
+                            template_df.to_excel(writer, sheet_name=table, index=False)
+                            worksheet = writer.sheets[table]
+                            
+                            # Format header
+                            for idx, col in enumerate(template_df.columns, 1):
+                                cell = worksheet.cell(1, idx)
+                                cell.font = Font(bold=True)
+                                cell.fill = PatternFill(
+                                    start_color='D3D3D3',
+                                    end_color='D3D3D3',
+                                    fill_type='solid'
+                                )
+                                worksheet.column_dimensions[get_column_letter(idx)].width = max(len(col) + 5, 15)
+                    
+                    st.download_button(
+                        label="Download Complete Template Excel",
+                        data=output.getvalue(),
+                        file_name="database_template.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
                 except Exception as e:
-                    st.error(f"Error saving changes: {str(e)}")
+                    st.error(f"Error generating template: {str(e)}")
                 finally:
                     if 'conn' in locals():
                         conn.close()
+            
+            # Single table template download
+            if st.button("📥 Download Template for Selected Table"):
+                try:
+                    conn = sqlite3.connect('attendance.db')
+                    cursor = conn.cursor()
+                    
+                    cursor.execute(f"PRAGMA table_info({selected_table})")
+                    columns = [col[1] for col in cursor.fetchall() 
+                             if col[1] not in ['id', 'created_at']]
+                    
+                    example_data = {}
+                    for col in columns:
+                        if 'date' in col.lower():
+                            example_data[col] = datetime.now().strftime('%Y-%m-%d')
+                        elif col == 'status':
+                            example_data[col] = 'P'
+                        elif col == 'load':
+                            example_data[col] = 1.0
+                        elif col == 'student_count':
+                            example_data[col] = 0
+                        elif col == 'source':
+                            example_data[col] = 'Class'
+                        else:
+                            example_data[col] = f'Example {col}'
+                    
+                    template_df = pd.DataFrame([example_data])
+                    
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        template_df.to_excel(writer, index=False, sheet_name='Template')
+                        worksheet = writer.sheets['Template']
+                        
+                        for idx, col in enumerate(template_df.columns, 1):
+                            cell = worksheet.cell(1, idx)
+                            cell.font = Font(bold=True)
+                            cell.fill = PatternFill(
+                                start_color='D3D3D3',
+                                end_color='D3D3D3',
+                                fill_type='solid'
+                            )
+                            worksheet.column_dimensions[get_column_letter(idx)].width = max(len(col) + 5, 15)
+                    
+                    st.download_button(
+                        label="Download Template Excel",
+                        data=output.getvalue(),
+                        file_name=f"{selected_table}_template.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error generating template: {str(e)}")
+                finally:
+                    if 'conn' in locals():
+                        conn.close()
+            
+            uploaded_file = st.file_uploader(
+                "Upload Excel File",
+                type=['xlsx'],
+                help="Upload either a single table template or a complete workbook with multiple sheets"
+            )
+            
+            if uploaded_file is not None:
+                try:
+                    # Read all sheets in the workbook
+                    excel_file = pd.ExcelFile(uploaded_file)
+                    sheet_names = excel_file.sheet_names
+                    
+                    st.write("### Preview of uploaded data:")
+                    
+                    # Display preview for each sheet
+                    for sheet in sheet_names:
+                        if sheet in tables:  # Only process sheets that match table names
+                            df = pd.read_excel(excel_file, sheet_name=sheet)
+                            st.write(f"**Table: {sheet}**")
+                            st.dataframe(df.head())
+                    
+                    if st.button("Confirm Upload", type="primary"):
+                        if st.warning("⚠️ This will DELETE ALL existing data in the affected tables and replace it with the uploaded data. Are you sure?"):
+                            conn = sqlite3.connect('attendance.db')
+                            cursor = conn.cursor()
+                            
+                            try:
+                                conn.execute("BEGIN TRANSACTION")
+                                
+                                for sheet in sheet_names:
+                                    if sheet in tables:
+                                        df = pd.read_excel(excel_file, sheet_name=sheet)
+                                        
+                                        # Get column information
+                                        cursor.execute(f"PRAGMA table_info({sheet})")
+                                        table_info = cursor.fetchall()
+                                        table_columns = [col[1] for col in table_info 
+                                                       if col[1] not in ['id', 'created_at']]
+                                        
+                                        # Verify columns match
+                                        missing_cols = set(table_columns) - set(df.columns)
+                                        if missing_cols:
+                                            raise ValueError(f"Missing required columns in {sheet}: {', '.join(missing_cols)}")
+                                        
+                                        # Process data types
+                                        for col in df.columns:
+                                            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                                                df[col] = df[col].dt.strftime('%Y-%m-%d')
+                                            elif 'timestamp' in str(df[col].dtype).lower():
+                                                df[col] = pd.to_datetime(df[col]).dt.strftime('%Y-%m-%d %H:%M:%S')
+                                        
+                                        # Clear existing data
+                                        cursor.execute(f"DELETE FROM {sheet}")
+                                        
+                                        # Insert new data
+                                        columns = ','.join(table_columns)
+                                        placeholders = ','.join(['?' for _ in table_columns])
+                                        insert_sql = f"""
+                                            INSERT INTO {sheet} 
+                                            ({columns}) VALUES ({placeholders})
+                                        """
+                                        
+                                        data_to_insert = df[table_columns].values.tolist()
+                                        cursor.executemany(insert_sql, data_to_insert)
+                                        
+                                        st.success(f"Successfully replaced {len(df)} records in {sheet}")
+                                
+                                conn.commit()
+                                st.rerun()
+                                
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error uploading data: {str(e)}")
+                            finally:
+                                conn.close()
+                                
+                except Exception as e:
+                    st.error(f"Error reading file: {str(e)}")
+    else:
+        st.info("Please select a table to view")
+
 
 
 
@@ -2479,7 +2788,7 @@ def admin_page():
                             writer, sheet_name='Subject Mapping', index=False)
                         
                         # Export faculty activities
-                        pd.read_sql_query("SELECT * FROM faculty_activities", conn).to_excel(
+                        pd.read_sql_query("SELECT * FROM faculty_worksheet", conn).to_excel(
                             writer, sheet_name='Faculty Activities', index=False)
                     
                     st.warning("⚠️ This export contains sensitive information including passwords. Handle with extreme caution!")
