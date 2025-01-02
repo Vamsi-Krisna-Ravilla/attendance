@@ -9,25 +9,21 @@ from openpyxl.utils import get_column_letter
 import io
 
 
-def date_range_selector(key_prefix: str, default_start: datetime = None) -> tuple[datetime, datetime]:
+def date_range_selector(key_prefix: str) -> tuple[datetime, datetime]:
     """
     A reusable component for date range selection with single/range toggle
     
     Args:
         key_prefix: Unique prefix for session state keys
-        default_start: Default start date (defaults to current date)
     
     Returns:
         tuple: (start_date, end_date)
     """
-    if default_start is None:
-        default_start = datetime.now()
-        
     col1, col2 = st.columns(2)
     with col1:
         selected_date = st.date_input(
             "Select Date",
-            default_start,
+            datetime.now(),
             key=f"{key_prefix}_date"
         )
     with col2:
@@ -47,6 +43,7 @@ def date_range_selector(key_prefix: str, default_start: datetime = None) -> tupl
         end_date = selected_date
         
     return selected_date, end_date
+
 
 
 
@@ -1414,59 +1411,6 @@ def show_class_timetable_page():
     
                 
 
-def view_faculty_worksheet_stats():
-    st.subheader("Faculty Worksheet Statistics")
-
-    # Date range selection
-    selected_date, end_date = date_range_selector("worksheet_stats")
-    #Rest of the function...
-
-    if st.button("Generate Report", type="primary"):
-        conn = sqlite3.connect('attendance.db')
-        cursor = conn.cursor()
-
-        query = """
-        SELECT 
-            f.name as Faculty,
-            COUNT(DISTINCT a.date || a.period) as Classes_Conducted,
-            COUNT(DISTINCT fa.id) as Other_Activities,
-            ROUND(COUNT(DISTINCT a.date || a.period) + COUNT(DISTINCT fa.id), 2) as Total_Load
-        FROM 
-            faculty f
-        LEFT JOIN 
-            attendance a ON f.name = a.faculty
-        LEFT JOIN 
-            faculty_activities fa ON f.name = fa.faculty
-        WHERE 
-            (a.date BETWEEN ? AND ?) OR (fa.date BETWEEN ? AND ?)
-        GROUP BY 
-            f.name
-        ORDER BY 
-            Total_Load DESC
-        """
-
-        cursor.execute(query, (start_date, end_date, start_date, end_date))
-        results = cursor.fetchall()
-
-        if results:
-            df = pd.DataFrame(results, columns=['Faculty', 'Classes Conducted', 'Other Activities', 'Total Load'])
-            st.dataframe(df)
-
-            # Export to Excel
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Faculty Worksheet Stats', index=False)
-            
-            st.download_button(
-                label="Download Excel Report",
-                data=output.getvalue(),
-                file_name=f"faculty_worksheet_stats_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        else:
-            st.info("No data found for the selected date range.")
-
-        conn.close()
 
 def update_faculty_activity(username, date, period, activity_type, description):
     """Update faculty activity with enhanced error handling"""
@@ -1676,11 +1620,11 @@ def show_faculty_classload():
     # Create tabs for different views
     tab1, tab2 = st.tabs(["📊 Overall Workload", "📝 Daily Worksheet"])
     
+    # Single date range selector for both tabs
+    selected_date, end_date = date_range_selector("faculty_workload")
+    
     # Tab 1: Overall Workload
     with tab1:
-        # Use the new date range selector for workload
-        selected_date, end_date = date_range_selector("workload")
-            
         if st.button("Generate Workload Report", type="primary"):
             df = get_faculty_classload(
                 st.session_state.username,
@@ -1722,14 +1666,13 @@ def show_faculty_classload():
                         'Section': st.column_config.TextColumn('Section', width=120),
                         'Combined Sections': st.column_config.TextColumn('Combined Sections', width=200),
                         'Distributed Load': st.column_config.NumberColumn('Load', format="%.2f", width=80),
-                        'Entry Time': st.column_config.TextColumn('Time', width=100),
+                        'Submission Time': st.column_config.TextColumn('Time', width=100),
                         'Lesson Plan': st.column_config.TextColumn('Lesson Plan', width=300)
                     },
                     hide_index=True
                 )
                 
                 # Export options
-                st.write("### Export Options")
                 buffer = BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df.to_excel(writer, sheet_name='Detailed Workload', index=False)
@@ -1749,12 +1692,6 @@ def show_faculty_classload():
                     
                     # Write subject distribution
                     subject_dist.to_excel(writer, sheet_name='Subject Distribution', index=False)
-                    
-                    # Format worksheets
-                    for sheet in writer.sheets.values():
-                        for column in sheet.columns:
-                            max_length = max(len(str(cell.value or '')) for cell in column)
-                            sheet.column_dimensions[get_column_letter(column[0].column)].width = min(50, max(12, max_length + 2))
                 
                 st.download_button(
                     label="📥 Download Complete Report",
@@ -1767,16 +1704,10 @@ def show_faculty_classload():
     
     # Tab 2: Daily Worksheet
     with tab2:
-        # Use the new date range selector for worksheet view
-        view_start_date, view_end_date = date_range_selector("worksheet_view")
-        
-        today = datetime.now().date()
-        selected_date = st.date_input("Select Date for Worksheet Entry", today, key="worksheet_entry_date")
-        
         worksheet_data = get_faculty_worksheet_data(
             st.session_state.username,
-            view_start_date,
-            view_end_date
+            selected_date,
+            end_date
         )
         
         if worksheet_data:
@@ -1804,13 +1735,13 @@ def show_faculty_classload():
                             **Load:** {data.get('load', 1.0):.2f}
                         """)
                     else:
-                        # Only show activity input form if it's today
-                        if selected_date == today:
+                        # Only show activity input form if it's today's date
+                        if selected_date == datetime.now().date():
                             with st.form(key=f"activity_form_{period}"):
                                 activity_type = st.selectbox(
                                     "Activity Type",
                                     [
-                                        " ",
+                                        "Select Activity",
                                         "Diploma Classwork",
                                         "MCA Claswork",
                                         "BCA Classwork",
@@ -1889,20 +1820,14 @@ def show_faculty_classload():
                     
                     worksheet_df.to_excel(writer, sheet_name='Daily Worksheet', index=False)
                     
-                    worksheet = writer.sheets['Daily Worksheet']
-                    for column in worksheet.columns:
-                        max_length = max(len(str(cell.value or '')) for cell in column)
-                        worksheet.column_dimensions[get_column_letter(column[0].column)].width = min(50, max(12, max_length + 2))
-                
                 st.download_button(
                     label="📥 Download Worksheet",
                     data=buffer.getvalue(),
-                    file_name=f"daily_worksheet_{view_start_date.strftime('%Y%m%d')}_{view_end_date.strftime('%Y%m%d')}.xlsx",
+                    file_name=f"daily_worksheet_{selected_date.strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         else:
-            st.info("No worksheet data found for the selected date range")
-
+            st.info("No worksheet data found for the selected date")
 
 
 def view_faculty_worksheet_stats():
@@ -2195,85 +2120,186 @@ def get_table_data(table_name):
         if 'conn' in locals():
             conn.close()
 
+def view_faculty_worksheet_stats():
+    """Display faculty worksheet statistics with filtering and export capabilities"""
+    st.subheader("Faculty Worksheet Statistics")
+    
+    # Use the date range selector
+    selected_date, end_date = date_range_selector("faculty_stats")
+    
+    if st.button("Generate Report", type="primary"):
+        try:
+            conn = sqlite3.connect('attendance.db')
+            cursor = conn.cursor()
+            
+            # Query to get faculty workload statistics
+            query = """
+            WITH FacultyClasses AS (
+                SELECT 
+                    f.name as faculty_name,
+                    COUNT(DISTINCT a.date || a.period) as classes_conducted,
+                    COUNT(DISTINCT s.merged_section) as unique_sections,
+                    COUNT(DISTINCT a.subject) as unique_subjects,
+                    SUM(CASE 
+                        WHEN a.status = 'P' THEN 1.0 
+                        ELSE 0.0 
+                    END) / NULLIF(COUNT(*), 0) * 100 as attendance_percentage
+                FROM faculty f
+                LEFT JOIN attendance a ON f.name = a.faculty
+                LEFT JOIN students s ON a.ht_number = s.ht_number
+                WHERE a.date BETWEEN ? AND ?
+                GROUP BY f.name
+            ),
+            FacultyActivities AS (
+                SELECT 
+                    faculty,
+                    COUNT(*) as other_activities,
+                    COUNT(DISTINCT activity_type) as unique_activities
+                FROM faculty_activities
+                WHERE date BETWEEN ? AND ?
+                GROUP BY faculty
+            )
+            SELECT 
+                fc.faculty_name,
+                COALESCE(fc.classes_conducted, 0) as classes_conducted,
+                COALESCE(fa.other_activities, 0) as other_activities,
+                COALESCE(fc.unique_sections, 0) as unique_sections,
+                COALESCE(fc.unique_subjects, 0) as unique_subjects,
+                COALESCE(fa.unique_activities, 0) as unique_activities,
+                ROUND(COALESCE(fc.attendance_percentage, 0), 2) as avg_attendance,
+                COALESCE(fc.classes_conducted, 0) + COALESCE(fa.other_activities, 0) as total_load
+            FROM FacultyClasses fc
+            LEFT JOIN FacultyActivities fa ON fc.faculty_name = fa.faculty
+            ORDER BY total_load DESC;
+            """
+            
+            # Format dates properly for SQLite
+            start_date_str = selected_date.strftime('%Y-%m-%d')
+            end_date_str = end_date.strftime('%Y-%m-%d')
+            
+            # Fixed: Added proper tuple for parameters
+            params = (start_date_str, end_date_str, start_date_str, end_date_str)
+            cursor.execute(query, params)
+            
+            results = cursor.fetchall()
+            
+            if results:
+                # Create DataFrame with proper column names
+                df = pd.DataFrame(results, columns=[
+                    'Faculty Name',
+                    'Classes Conducted',
+                    'Other Activities',
+                    'Unique Sections',
+                    'Unique Subjects',
+                    'Unique Activity Types',
+                    'Avg Attendance %',
+                    'Total Load'
+                ])
+                
+                # Display summary metrics
+                st.write("### Overall Summary")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Faculty", len(df))
+                with col2:
+                    st.metric("Total Classes", df['Classes Conducted'].sum())
+                with col3:
+                    st.metric("Total Activities", df['Other Activities'].sum())
+                with col4:
+                    st.metric("Avg Load", f"{df['Total Load'].mean():.2f}")
+                
+                # Display the statistics table
+                st.write("### Faculty-wise Statistics")
+                st.dataframe(df)
+                
+            else:
+                st.info("No data found for the selected date range")
+                
+        except Exception as e:
+            st.error(f"Error generating faculty statistics: {str(e)}")
+        finally:
+            if 'conn' in locals():
+                conn.close()
+
 def view_data_tab():
-    """Enhanced view data tab with all tables and export functionality"""
+    """Enhanced view data tab with editable tables and proper database updates"""
     st.subheader("View Database Tables")
     
-    # Get all available tables
     tables = get_all_tables()
-    
-    # Create columns for layout
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        # Table selection
-        selected_table = st.selectbox(
-            "Select Table to View",
-            tables,
-            format_func=lambda x: x.replace('_', ' ').title()
-        )
-    
-    with col2:
-        # Export button (will be enabled when data is loaded)
-        export_placeholder = st.empty()
+    selected_table = st.selectbox(
+        "Select Table to View",
+        tables,
+        format_func=lambda x: x.replace('_', ' ').title()
+    )
     
     if selected_table:
-        # Get and display table data
+        # Get original data
         df = get_table_data(selected_table)
         
         if not df.empty:
-            st.write(f"### {selected_table.replace('_', ' ').title()} Data")
-            st.dataframe(
+            # Store the original data in session state to compare changes
+            if f"original_{selected_table}" not in st.session_state:
+                st.session_state[f"original_{selected_table}"] = df.copy()
+                
+            edited_df = st.data_editor(
                 df,
+                num_rows="dynamic",
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                key=f"editor_{selected_table}"
             )
             
-            # Create Excel file for export
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name=selected_table, index=False)
-                
-                # Format worksheet
-                worksheet = writer.sheets[selected_table]
-                for column in worksheet.columns:
-                    max_length = max(len(str(cell.value or '')) for cell in column)
-                    worksheet.column_dimensions[get_column_letter(column[0].column)].width = min(50, max(12, max_length + 2))
-            
-            # Add export button
-            with col2:
-                export_placeholder.download_button(
-                    label="📥 Export to Excel",
-                    data=output.getvalue(),
-                    file_name=f"{selected_table}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            
-            # Display table statistics
-            st.write("### Table Statistics")
-            stats_col1, stats_col2, stats_col3 = st.columns(3)
-            
-            with stats_col1:
-                st.metric("Total Rows", len(df))
-            with stats_col2:
-                st.metric("Total Columns", len(df.columns))
-            with stats_col3:
-                st.metric("Last Updated", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            
-            # Display column information
-            st.write("### Column Information")
-            column_info = pd.DataFrame({
-                'Column Name': df.columns,
-                'Data Type': df.dtypes.values,
-                'Non-Null Count': df.count().values,
-                'Null Count': df.isna().sum().values
-            })
-            st.dataframe(column_info, hide_index=True, use_container_width=True)
-            
-        else:
-            st.info(f"No data found in table: {selected_table}")
-    else:
-        st.info("No tables found in the database")
+            if st.button("Save Changes", type="primary"):
+                try:
+                    conn = sqlite3.connect('attendance.db')
+                    cursor = conn.cursor()
+                    
+                    # Get the primary key column (usually the first column)
+                    primary_key_col = df.columns[0]
+                    
+                    # Compare original and edited dataframes
+                    original_df = st.session_state[f"original_{selected_table}"]
+                    
+                    # Find modified rows
+                    modified_mask = (edited_df != original_df).any(axis=1)
+                    modified_rows = edited_df[modified_mask]
+                    
+                    if not modified_rows.empty:
+                        for idx, row in modified_rows.iterrows():
+                            # Build dynamic UPDATE query
+                            columns = edited_df.columns
+                            set_clause = ", ".join([f"{col} = ?" for col in columns])
+                            query = f"UPDATE {selected_table} SET {set_clause} WHERE {primary_key_col} = ?"
+                            
+                            # Prepare values for the query
+                            values = [row[col] for col in columns]  # All column values
+                            values.append(row[primary_key_col])     # Add primary key value for WHERE clause
+                            
+                            # Execute update
+                            cursor.execute(query, values)
+                        
+                        conn.commit()
+                        st.success(f"Successfully updated {len(modified_rows)} rows!")
+                        
+                        # Update session state with new data
+                        st.session_state[f"original_{selected_table}"] = edited_df.copy()
+                        
+                        # Refresh the page to show updated data
+                        st.rerun()
+                    else:
+                        st.info("No changes detected")
+                        
+                except sqlite3.Error as e:
+                    st.error(f"Database error: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error saving changes: {str(e)}")
+                finally:
+                    if 'conn' in locals():
+                        conn.close()
+
+
+
+
 
 def admin_page():
     st.title("Admin Dashboard")
