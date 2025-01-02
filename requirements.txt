@@ -8,6 +8,6 @@ PyJWT
 python-jose
 passlib[bcrypt]
 python-multipart
-#pip install pandas sqlalchemy openpyxl
+openpyxl
 #pip install pdfkit
 plotly
