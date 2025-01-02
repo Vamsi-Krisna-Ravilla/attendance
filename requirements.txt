@@ -11,4 +11,3 @@ python-multipart
 #pip install pandas sqlalchemy openpyxl
 #pip install pdfkit
 plotly
-models
