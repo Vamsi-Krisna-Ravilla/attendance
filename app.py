@@ -2020,11 +2020,12 @@ def mark_attendance(ht_number, date, period, status, faculty, subject, lesson_pl
 
 
 def daily_worksheet():
-    """Enhanced daily worksheet view with proper IST timezone handling"""
+    """Enhanced daily worksheet view with proper date-based editing permissions"""
     st.title("Faculty Workload Dashboard")
     
     # Get current time in IST
     current_time_ist = get_current_time_ist()
+    current_date_ist = current_time_ist.date()
     
     # Create tabs for different views
     tab1, tab2 = st.tabs(["📊 Overall Workload", "📝 Daily Worksheet"])
@@ -2037,9 +2038,9 @@ def daily_worksheet():
         with col1:
             selected_date = st.date_input(
                 "Select Date",
-                value=current_time_ist.date(),
-                min_value=current_time_ist.date() - timedelta(days=30),
-                max_value=current_time_ist.date() + timedelta(days=30)
+                value=current_date_ist,
+                min_value=current_date_ist - timedelta(days=30),
+                max_value=current_date_ist + timedelta(days=30)
             )
         
         with col2:
@@ -2049,27 +2050,17 @@ def daily_worksheet():
                 index=0
             )
         
-        # Convert selected date to IST for comparison
-        selected_date_ist = datetime.combine(selected_date, datetime.min.time())
-        selected_date_ist = pytz.timezone('Asia/Kolkata').localize(selected_date_ist)
+        # Check if selected date is today
+        is_today = selected_date == current_date_ist
+        if not is_today:
+            st.warning("⚠️ You can only edit worksheets for the current day. Past worksheets are view-only.")
         
         # Get faculty worksheet data
         conn = sqlite3.connect('attendance.db')
         c = conn.cursor()
         
         try:
-            # Get all periods for the selected date
-            c.execute("""
-                SELECT DISTINCT period 
-                FROM faculty_worksheet 
-                WHERE faculty = ? 
-                AND date = ?
-                ORDER BY period
-            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
-            
-            existing_periods = {row[0] for row in c.fetchall()}
-            
-            # Calculate net class load
+            # Calculate loads
             c.execute("""
                 SELECT COALESCE(SUM(load), 0)
                 FROM faculty_worksheet
@@ -2080,7 +2071,6 @@ def daily_worksheet():
             
             net_class_load = c.fetchone()[0]
             
-            # Calculate other activities load
             c.execute("""
                 SELECT COALESCE(SUM(load), 0)
                 FROM faculty_worksheet
@@ -2094,50 +2084,74 @@ def daily_worksheet():
             # Display summary
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Net Class Conducted", f"{net_class_load:.1f}")
+                st.metric("Net Class Conducted", f"{net_class_load:.2f}")
             with col2:
-                st.metric("Other Activities", f"{other_activities_load:.1f}")
+                st.metric("Other Activities", f"{other_activities_load:.2f}")
             with col3:
-                st.metric("Total Load", f"{net_class_load + other_activities_load:.1f}/6")
+                st.metric("Total Load", f"{net_class_load + other_activities_load:.2f}/6")
             
             st.subheader("Period-wise Activities")
             
-            # Show all periods (1-6) regardless of existing data
+            # Get existing activities for the selected date
+            c.execute("""
+                SELECT period, activity_type, description, subject, section, 
+                       student_count, load, source
+                FROM faculty_worksheet
+                WHERE faculty = ?
+                AND date = ?
+                ORDER BY period
+            """, (st.session_state.username, selected_date.strftime('%Y-%m-%d')))
+            
+            existing_activities = c.fetchall()
+            activities_by_period = {row[0]: row for row in existing_activities}
+            
+            # Show all periods (1-6)
             for period in range(1, 7):
                 period_str = f"Period {period}"
                 with st.expander(f"{period_str} - {period_str}"):
-                    if period_str in existing_periods:
-                        # Display existing activities
-                        c.execute("""
-                            SELECT activity_type, description, subject, section, 
-                                   student_count, load, source, created_at
-                            FROM faculty_worksheet
-                            WHERE faculty = ?
-                            AND date = ?
-                            AND period = ?
-                        """, (st.session_state.username, selected_date.strftime('%Y-%m-%d'), period_str))
+                    if period_str in activities_by_period:
+                        activity = activities_by_period[period_str]
+                        st.write(f"**Activity Type:** {activity[1]}")
+                        st.write(f"**Description:** {activity[2]}")
+                        st.write(f"**Subject:** {activity[3]}")
+                        st.write(f"**Section:** {activity[4]}")
+                        st.write(f"**Student Count:** {activity[5]}")
+                        st.write(f"**Load:** {activity[6]}")
+                        st.write(f"**Source:** {activity[7]}")
                         
-                        activities = c.fetchall()
-                        for activity in activities:
-                            st.write(f"**Activity:** {activity[0]}")
-                            st.write(f"**Description:** {activity[1]}")
-                            st.write(f"**Subject:** {activity[2]}")
-                            st.write(f"**Section:** {activity[3]}")
-                            st.write(f"**Student Count:** {activity[4]}")
-                            st.write(f"**Load:** {activity[5]}")
-                            st.write(f"**Source:** {activity[6]}")
-                            st.write(f"**Created At:** {format_ist_time(datetime.strptime(activity[7], '%Y-%m-%d %H:%M:%S'))}")
+                        # Only show edit/delete buttons for today's worksheet
+                        if is_today:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button(f"Edit Activity", key=f"edit_{period}"):
+                                    st.session_state.editing_activity = True
+                                    st.session_state.editing_period = period_str
+                                    st.session_state.activity_data = activity
+                            with col2:
+                                if st.button(f"Delete Activity", key=f"delete_{period}"):
+                                    if st.warning("Are you sure you want to delete this activity?"):
+                                        c.execute("""
+                                            DELETE FROM faculty_worksheet
+                                            WHERE faculty = ?
+                                            AND date = ?
+                                            AND period = ?
+                                        """, (st.session_state.username, 
+                                             selected_date.strftime('%Y-%m-%d'),
+                                             period_str))
+                                        conn.commit()
+                                        st.success("Activity deleted successfully!")
+                                        st.rerun()
                     else:
                         st.info("No activities recorded for this period")
                         
-                    # Add activity button
-                    if st.button(f"Add Activity", key=f"add_activity_{period}"):
-                        st.session_state.adding_activity = True
-                        st.session_state.selected_period = period_str
+                        # Only show add button for today's worksheet
+                        if is_today:
+                            if st.button(f"Add Activity", key=f"add_{period}"):
+                                st.session_state.adding_activity = True
+                                st.session_state.selected_period = period_str
             
             # Download button
             if st.button("Download Daily Worksheet"):
-                # Generate Excel report
                 df = pd.read_sql_query("""
                     SELECT period, activity_type, description, subject, section, 
                            student_count, load, source, created_at
@@ -2145,16 +2159,31 @@ def daily_worksheet():
                     WHERE faculty = ?
                     AND date = ?
                     ORDER BY period
-                """, conn, params=(st.session_state.username, selected_date.strftime('%Y-%m-%d')))
+                """, conn, params=(st.session_state.username, 
+                                 selected_date.strftime('%Y-%m-%d')))
                 
-                # Convert created_at to IST
-                df['created_at'] = df['created_at'].apply(lambda x: format_ist_time(datetime.strptime(x, '%Y-%m-%d %H:%M:%S')))
+                # Convert timestamps to IST
+                df['created_at'] = pd.to_datetime(df['created_at']).apply(
+                    lambda x: format_ist_time(x)
+                )
                 
                 # Create Excel file
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df.to_excel(writer, index=False, sheet_name='Daily Worksheet')
+                    worksheet = writer.sheets['Daily Worksheet']
                     
+                    # Format headers
+                    for idx, col in enumerate(df.columns, 1):
+                        cell = worksheet.cell(1, idx)
+                        cell.font = Font(bold=True)
+                        cell.fill = PatternFill(
+                            start_color='D3D3D3',
+                            end_color='D3D3D3',
+                            fill_type='solid'
+                        )
+                        worksheet.column_dimensions[get_column_letter(idx)].width = max(len(col) + 5, 15)
+                
                 # Offer download
                 st.download_button(
                     label="📥 Download Excel",
@@ -2165,8 +2194,11 @@ def daily_worksheet():
                 
         except Exception as e:
             st.error(f"Error loading worksheet: {str(e)}")
+            print(f"Debug - Error in daily_worksheet: {str(e)}")
         finally:
-            conn.close()
+            if 'conn' in locals():
+                conn.close()
+
 
 
 
