@@ -1266,126 +1266,6 @@ def get_faculty_classload(username, start_date=None, end_date=None):
         if conn:
             conn.close()
 
-def get_missing_attendance_sections(date, period):
-    """Get sections that haven't had attendance marked for a given period and date"""
-    conn = sqlite3.connect('attendance.db')
-    cursor = conn.cursor()
-    try:
-        # Modified query to remove is_active check and use proper table structure
-        cursor.execute("""
-            WITH AllSections AS (
-                SELECT DISTINCT section
-                FROM section_subject_mapping
-            ),
-            MarkedSections AS (
-                SELECT DISTINCT s.merged_section
-                FROM attendance a
-                JOIN students s ON a.ht_number = s.ht_number
-                WHERE a.date = ? AND a.period = ?
-            )
-            SELECT section 
-            FROM AllSections 
-            WHERE section NOT IN (SELECT * FROM MarkedSections)
-            ORDER BY section
-        """, (date, period))
-        
-        missing_sections = [row[0] for row in cursor.fetchall()]
-        return missing_sections
-    except Exception as e:
-        print(f"Error getting missing sections: {str(e)}")
-        return []
-    finally:
-        conn.close()
-
-
-
-def view_class_timetable():
-    st.title("Class Timetable")
-    
-    # Date selection
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        selected_date = st.date_input("Select Date", datetime.now())
-    with col2:
-        view_type = st.selectbox("View Type", ["Single Day", "Week View"], index=0)
-    
-    # Convert date to string format
-    date_str = selected_date.strftime('%Y-%m-%d')
-    
-    # Get timetable data
-    conn = sqlite3.connect('attendance.db')
-    df = pd.read_sql_query("""
-        SELECT 
-            a.date,
-            a.period,
-            a.faculty,
-            a.subject,
-            s.merged_section as section,
-            COUNT(DISTINCT a.ht_number) as students,
-            MAX(a.created_at) as time,
-            'Completed' as status
-        FROM attendance a
-        JOIN students s ON a.ht_number = s.ht_number
-        WHERE a.date = ?
-        GROUP BY a.date, a.period, a.faculty, a.subject, s.merged_section
-        ORDER BY a.period, s.merged_section
-    """, conn, params=[date_str])
-    
-    # Daily summary
-    st.header("Daily Summary")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total Classes", len(df))
-    with col2:
-        st.metric("Faculty Engaged", df['faculty'].nunique())
-    with col3:
-        st.metric("Sections Covered", df['section'].nunique())
-    
-    # Class Timetable with Missing Attendance Dropdowns
-    st.header("Class Timetable")
-    
-    # Get all periods
-    periods = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
-    
-    # Create tabs for each period
-    for period in periods:
-        # Filter data for current period
-        period_data = df[df['period'] == period]
-        
-        # Create expander for the period
-        with st.expander(f"Period {period}", expanded=False):
-            # Create two columns
-            left_col, right_col = st.columns([3, 2])
-            
-            with left_col:
-                if not period_data.empty:
-                    st.write("📚 Completed Classes:")
-                    st.dataframe(
-                        period_data[['faculty', 'subject', 'section', 'students', 'time', 'status']],
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                else:
-                    st.info("No completed classes for this period")
-            
-            with right_col:
-                # Get and show missing attendance sections
-                missing_sections = get_missing_attendance_sections(date_str, period)
-                if missing_sections:
-                    st.write("⚠️ Missing Attendance:")
-                    for section in missing_sections:
-                        st.warning(section, icon="⚠️")
-                else:
-                    st.success("✅ All sections marked!", icon="✅")
-    
-    conn.close()
-
-
-
-
-
-
 def show_class_timetable_page():
     """Modified to use the new date range selector"""
     st.subheader("Class Timetable")
@@ -1495,11 +1375,10 @@ def show_faculty_classload():
     tab1, tab2 = st.tabs(["📊 Overall Workload", "📝 Daily Worksheet"])
     
     # Single date range selector for both tabs
-    # selected_date, end_date = date_range_selector("faculty_workload")
+    selected_date, end_date = date_range_selector("faculty_workload")
     
     # Tab 1: Overall Workload
     with tab1:
-        selected_date, end_date = date_range_selector("faculty_workload")
         if st.button("Generate Workload Report", type="primary"):
             df = get_faculty_classload(
                 st.session_state.username,
@@ -1579,7 +1458,6 @@ def show_faculty_classload():
     
     # Tab 2: Daily Worksheet
     with tab2:
-        selected_date, end_date = date_range_selector("faculty_worksheet1")
         worksheet_data = get_faculty_worksheet_data(
             st.session_state.username,
             selected_date,
@@ -3082,29 +2960,149 @@ def view_data_tab():
 
 
 
+
+
 def admin_page():
     st.title("Admin Dashboard")
     
-    tab1, tab2, tab3= st.tabs([
-
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Manage Students", 
+        "Manage Faculty", 
+        "Section-Subject Mapping",
         "Faculty Worksheet Stats",
-        "View/Edit Data",
+        "View Data",
         "Downlaod Data"
     ])
-
-
+    
     with tab1:
-        view_faculty_worksheet_stats()
+        st.subheader("Add/Edit Students")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            # Manual entry form
+            with st.form("student_form"):
+                ht_number = st.text_input("HT Number")
+                name = st.text_input("Student Name")
+                original_section = st.text_input("Original Section")
+                merged_section = st.text_input("Merged Section")
+                
+                if st.form_submit_button("Add Student"):
+                    if all([ht_number, name, original_section, merged_section]):
+                        add_student(ht_number, name, original_section, merged_section)
+                        st.success("Student added successfully!")
+                    else:
+                        st.error("All fields are required!")
+        
+        with col2:
+            # Excel upload section
+            st.markdown("### Bulk Import/Export")
+            
+            # Template download
+            template_data = generate_template_excel('students')
+            st.download_button(
+                "📥 Download Template",
+                data=template_data,
+                file_name="student_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            # File upload
+            uploaded_file = st.file_uploader("Upload Excel File", type=['xlsx'], key="student_upload")
+            if uploaded_file is not None:
+                if st.button("Import Students"):
+                    success, message = import_excel_data(uploaded_file, 'students')
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
     
     with tab2:
+        st.subheader("Add/Edit Faculty")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            # Manual entry form
+            with st.form("faculty_form"):
+                name = st.text_input("Faculty Name")
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                
+                if st.form_submit_button("Add Faculty"):
+                    if all([name, username, password]):
+                        add_faculty(name, username, password)
+                        st.success("Faculty added successfully!")
+                    else:
+                        st.error("All fields are required!")
+        
+        with col2:
+            # Excel upload section
+            st.markdown("### Bulk Import/Export")
+            
+            # Template download
+            template_data = generate_template_excel('faculty')
+            st.download_button(
+                "📥 Download Template",
+                data=template_data,
+                file_name="faculty_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            # File upload
+            uploaded_file = st.file_uploader("Upload Excel File", type=['xlsx'], key="faculty_upload")
+            if uploaded_file is not None:
+                if st.button("Import Faculty"):
+                    success, message = import_excel_data(uploaded_file, 'faculty')
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+    
+    with tab3:
+        st.subheader("Section-Subject Mapping")
+        
+        # Excel upload section
+        st.markdown("### Bulk Import/Export")
+        
+        # Template download
+        template_data = generate_template_excel('section_subjects')
+        st.download_button(
+            "📥 Download Template",
+            data=template_data,
+            file_name="section_subject_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # File upload
+        uploaded_file = st.file_uploader("Upload Excel File", type=['xlsx'], key="section_subject_upload")
+        if uploaded_file is not None:
+            if st.button("Import Mapping"):
+                success, message = import_excel_data(uploaded_file, 'section_subjects')
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+        
+        # Display current mapping
+        if st.button("View Current Mapping"):
+            conn = sqlite3.connect('attendance.db')
+            mapping_df = pd.read_sql_query("SELECT * FROM section_subject_mapping", conn)
+            conn.close()
+            if not mapping_df.empty:
+                st.dataframe(mapping_df)
+            else:
+                st.info("No section-subject mappings found.")
+    
+
+    with tab4:
+        view_faculty_worksheet_stats()
+    
+    with tab5:
         view_data_tab()
     
     
     
-    with tab3:
+    with tab6:
         download_data_tab()
-
-
 
 
 def download_data_tab():
@@ -3284,7 +3282,7 @@ def main():
         elif page == "View Statistics":
             view_statistics_page()
         elif page == "Classes Timetable":
-            view_class_timetable()
+            show_class_timetable_page()
         elif page == "My Work Tracker":
             show_faculty_classload()
         elif page == "Reset Credentials":
@@ -3295,4 +3293,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
