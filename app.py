@@ -3282,7 +3282,7 @@ def main():
         elif page == "View Statistics":
             view_statistics_page()
         elif page == "Classes Timetable":
-            view_timetable()
+            show_class_timetable_page()
         elif page == "My Work Tracker":
             show_faculty_classload()
         elif page == "Reset Credentials":
