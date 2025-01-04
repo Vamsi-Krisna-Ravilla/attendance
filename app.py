@@ -1156,7 +1156,7 @@ def reset_credentials_page():
                 
 
 def get_faculty_classload(username, start_date=None, end_date=None):
-    """Modified to handle cases where created_at might not exist"""
+    """Modified to show only net classes and other activities, with corrected time display"""
     try:
         conn = sqlite3.connect('attendance.db')
         cursor = conn.cursor()
@@ -1171,91 +1171,92 @@ def get_faculty_classload(username, start_date=None, end_date=None):
         # Prepare date filters if provided
         date_filter = ""
         if start_date and end_date:
-            date_filter = "AND a.date >= ? AND a.date <= ?"
+            date_filter = "AND date >= ? AND date <= ?"
             params.extend([start_date, end_date])
         
-        # Modified query to handle missing created_at
+        # Modified query with IST time adjustment
         query = f"""
-            WITH PeriodGroups AS (
+            WITH AllActivities AS (
+                -- Class activities from attendance
                 SELECT 
                     date,
                     period,
-                    COUNT(DISTINCT subject) as subject_count
-                FROM (
-                    SELECT DISTINCT
-                        a.date,
-                        a.period,
-                        a.subject
-                    FROM attendance a
-                    WHERE a.faculty = ?
-                    {date_filter}
-                )
-                GROUP BY date, period
-            ),
-            DetailedClasses AS (
-                SELECT 
-                    a.date,
-                    a.period,
-                    a.subject,
+                    subject as activity_name,
                     GROUP_CONCAT(DISTINCT s.merged_section) as sections,
                     COUNT(DISTINCT s.merged_section) as section_count,
-                    a.lesson_plan,
-                    MIN(a.id) as first_entry_id,
+                    lesson_plan as description,
                     COUNT(DISTINCT a.ht_number) as student_count,
-                    pg.subject_count,
-                    COALESCE(MIN(a.created_at), datetime('now', 'localtime')) as submission_time
+                    ROUND(1.0/COUNT(DISTINCT a.subject), 2) as activity_load,
+                    'Class' as activity_type,
+                    datetime(created_at, '+0 hours', '+0 minutes') as adjusted_time
                 FROM attendance a
                 JOIN students s ON a.ht_number = s.ht_number
-                JOIN PeriodGroups pg ON a.date = pg.date AND a.period = pg.period
                 WHERE a.faculty = ?
                 {date_filter}
-                GROUP BY a.date, a.period, a.subject
+                GROUP BY date, period, subject, lesson_plan
+                
+                UNION ALL
+                
+                -- Other activities from faculty_worksheet
+                SELECT 
+                    date,
+                    period,
+                    activity_type as activity_name,
+                    section as sections,
+                    1 as section_count,
+                    description,
+                    student_count,
+                    load as activity_load,
+                    'Other' as activity_type,
+                    datetime(created_at, '+0 hours', '+00 minutes') as adjusted_time
+                FROM faculty_worksheet
+                WHERE faculty = ?
+                {date_filter}
+                AND source = 'Worksheet'
             )
             SELECT 
-                d.date,
-                d.period,
-                d.subject,
-                d.sections,
-                d.section_count,
-                ROUND(1.0/d.subject_count, 2) as distributed_load,
-                d.lesson_plan,
-                d.student_count,
-                time(d.submission_time) as submission_time
-            FROM DetailedClasses d
-            ORDER BY d.date DESC, d.period, d.subject
+                date as Date,
+                period as Period,
+                activity_name as Subject,
+                sections as Section,
+                sections as Combined_Sections,
+                activity_load as Distributed_Load,
+                student_count as Student_Count,
+                time(adjusted_time) as Submission_Time,
+                description as Lesson_Plan,
+                activity_type as Activity_Type
+            FROM AllActivities
+            ORDER BY date DESC, period, activity_name
         """
         
-        cursor.execute(query, params + params)
+        # Execute query with parameters for both parts
+        cursor.execute(query, params + params)  # Duplicate params for UNION
         rows = cursor.fetchall()
         
         if not rows:
             return pd.DataFrame()
-            
-        # Create DataFrame with submission times
-        classload_data = []
-        for row in rows:
-            date, period, subject, sections, section_count, dist_load, lesson_plan, student_count, submission_time = row
-            
-            entry = {
-                'Date': date,
-                'Period': period,
-                'Subject': subject,
-                'Section': sections,
-                'Combined Sections': sections,
-                'Distributed Load': dist_load,
-                'Student Count': student_count,
-                'Submission Time': submission_time or 'Not recorded',
-                'Lesson Plan': lesson_plan
-            }
-            classload_data.append(entry)
         
-        df = pd.DataFrame(classload_data)
+        # Create DataFrame
+        columns = [
+            'Date', 'Period', 'Subject', 'Section', 'Combined Sections',
+            'Distributed Load', 'Student Count', 'Submission Time',
+            'Lesson Plan', 'Activity Type'
+        ]
+        df = pd.DataFrame(rows, columns=columns)
         
         if not df.empty:
+            # Calculate total loads by activity type
             df['Total Load'] = df.groupby(['Date', 'Period'])['Distributed Load'].transform('sum')
             df['Day'] = pd.to_datetime(df['Date']).dt.strftime('%A')
             df = df.sort_values(['Date', 'Period', 'Subject'])
-            df['Cumulative Load'] = df['Distributed Load'].cumsum()
+            
+            # Calculate net classes and other activities
+            net_classes = df[df['Activity Type'] == 'Class']['Distributed Load'].sum()
+            other_activities = df[df['Activity Type'] == 'Other']['Distributed Load'].sum()
+            
+            # Add these values to the DataFrame object as attributes
+            df.net_classes = net_classes
+            df.other_activities = other_activities
         
         return df
         
@@ -1266,120 +1267,317 @@ def get_faculty_classload(username, start_date=None, end_date=None):
         if conn:
             conn.close()
 
-def get_missing_attendance_sections(date, period):
-    """Get sections that haven't had attendance marked for a given period and date"""
-    conn = sqlite3.connect('attendance.db')
-    cursor = conn.cursor()
-    try:
-        # Modified query to remove is_active check and use proper table structure
-        cursor.execute("""
-            WITH AllSections AS (
-                SELECT DISTINCT section
-                FROM section_subject_mapping
-            ),
-            MarkedSections AS (
-                SELECT DISTINCT s.merged_section
-                FROM attendance a
-                JOIN students s ON a.ht_number = s.ht_number
-                WHERE a.date = ? AND a.period = ?
-            )
-            SELECT section 
-            FROM AllSections 
-            WHERE section NOT IN (SELECT * FROM MarkedSections)
-            ORDER BY section
-        """, (date, period))
-        
-        missing_sections = [row[0] for row in cursor.fetchall()]
-        return missing_sections
-    except Exception as e:
-        print(f"Error getting missing sections: {str(e)}")
-        return []
-    finally:
-        conn.close()
+
+
 
 
 
 def view_class_timetable():
+    """Main function to display the class timetable page"""
     st.title("Class Timetable")
     
-    # Date selection
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    # View type selector
+    view_type = st.selectbox(
+        "View Type",
+        ["Single Day", "Week View"],
+        key="view_type"
+    )
+    
+    if view_type == "Single Day":
+        # Single day view
         selected_date = st.date_input("Select Date", datetime.now())
-    with col2:
-        view_type = st.selectbox("View Type", ["Single Day", "Week View"], index=0)
-    
-    # Convert date to string format
-    date_str = selected_date.strftime('%Y-%m-%d')
-    
-    # Get timetable data
-    conn = sqlite3.connect('attendance.db')
-    df = pd.read_sql_query("""
-        SELECT 
-            a.date,
-            a.period,
-            a.faculty,
-            a.subject,
-            s.merged_section as section,
-            COUNT(DISTINCT a.ht_number) as students,
-            MAX(a.created_at) as time,
-            'Completed' as status
-        FROM attendance a
-        JOIN students s ON a.ht_number = s.ht_number
-        WHERE a.date = ?
-        GROUP BY a.date, a.period, a.faculty, a.subject, s.merged_section
-        ORDER BY a.period, s.merged_section
-    """, conn, params=[date_str])
-    
-    # Daily summary
-    st.header("Daily Summary")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total Classes", len(df))
-    with col2:
-        st.metric("Faculty Engaged", df['faculty'].nunique())
-    with col3:
-        st.metric("Sections Covered", df['section'].nunique())
-    
-    # Class Timetable with Missing Attendance Dropdowns
-    st.header("Class Timetable")
-    
-    # Get all periods
-    periods = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
-    
-    # Create tabs for each period
-    for period in periods:
-        # Filter data for current period
-        period_data = df[df['period'] == period]
+        date_to_check = selected_date.strftime('%Y-%m-%d')
         
-        # Create expander for the period
-        with st.expander(f"Period {period}", expanded=False):
-            # Create two columns
-            left_col, right_col = st.columns([3, 2])
+        # Get summary statistics
+        summary = get_attendance_summary(date_to_check)
+        
+        # Display summary metrics
+        st.subheader("Daily Summary")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Classes", summary['total_classes'])
+        with col2:
+            st.metric("Faculty Engaged", summary['faculty_count'])
+        with col3:
+            st.metric("Sections Covered", summary['sections_covered'])
+        
+        # Display attendance statistics
+        if summary['total_classes'] > 0:
+            st.markdown("### Attendance Statistics")
+            col1, col2 = st.columns(2)
+            with col1:
+                total_students = summary['total_present'] + summary['total_absent']
+                present_percentage = (summary['total_present'] / total_students * 100) if total_students > 0 else 0
+                st.metric("Present", f"{summary['total_present']} ({present_percentage:.1f}%)")
+            with col2:
+                absent_percentage = (summary['total_absent'] / total_students * 100) if total_students > 0 else 0
+                st.metric("Absent", f"{summary['total_absent']} ({absent_percentage:.1f}%)")
+        
+        st.markdown("### Class Timetable")
+        display_daily_timetable(date_to_check)
+        
+    else:
+        # Week view
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", 
+                                     datetime.now() - timedelta(days=datetime.now().weekday()))
+        with col2:
+            end_date = st.date_input("End Date", 
+                                   start_date + timedelta(days=6))
+        
+        if start_date > end_date:
+            st.error("Start date must be before end date")
+            return
+        
+        # Initialize week totals
+        week_totals = {
+            'total_classes': 0,
+            'total_faculty': set(),
+            'total_sections': set(),
+            'total_present': 0,
+            'total_absent': 0
+        }
+        
+        # Display each day's timetable
+        current_date = start_date
+        while current_date <= end_date:
+            date_str = current_date.strftime('%Y-%m-%d')
             
-            with left_col:
-                if not period_data.empty:
-                    st.write("📚 Completed Classes:")
+            # Get daily summary
+            daily_summary = get_attendance_summary(date_str)
+            
+            # Update week totals
+            week_totals['total_classes'] += daily_summary['total_classes']
+            week_totals['total_faculty'].update(get_faculty_list(date_str))
+            week_totals['total_sections'].update(get_sections_list(date_str))
+            week_totals['total_present'] += daily_summary['total_present']
+            week_totals['total_absent'] += daily_summary['total_absent']
+            
+            # Display daily timetable with date header
+            st.markdown(f"### {current_date.strftime('%A, %B %d, %Y')}")
+            display_daily_timetable(date_str)
+            st.markdown("---")
+            
+            current_date += timedelta(days=1)
+        
+        # Display week summary in sidebar
+        st.sidebar.markdown("## Week Summary")
+        st.sidebar.metric("Total Classes", week_totals['total_classes'])
+        st.sidebar.metric("Total Faculty", len(week_totals['total_faculty']))
+        st.sidebar.metric("Total Sections", len(week_totals['total_sections']))
+        
+        # Display week attendance statistics
+        total_students = week_totals['total_present'] + week_totals['total_absent']
+        if total_students > 0:
+            present_percentage = (week_totals['total_present'] / total_students * 100)
+            absent_percentage = (week_totals['total_absent'] / total_students * 100)
+            
+            st.sidebar.markdown("### Week Attendance")
+            st.sidebar.metric("Present", f"{week_totals['total_present']} ({present_percentage:.1f}%)")
+            st.sidebar.metric("Absent", f"{week_totals['total_absent']} ({absent_percentage:.1f}%)")
+
+
+
+
+
+def get_completed_classes(date, period):
+    """Get completed classes for a specific date and period with attendance details"""
+    conn = sqlite3.connect('attendance.db')
+    try:
+        query = """
+            SELECT DISTINCT 
+                a.faculty,
+                a.subject,
+                s.merged_section as section,
+                COUNT(DISTINCT s.ht_number) as students,
+                MIN(a.created_at) as time,
+                SUM(CASE WHEN a.status = 'P' THEN 1 ELSE 0 END) as present_count,
+                SUM(CASE WHEN a.status = 'A' THEN 1 ELSE 0 END) as absent_count,
+                a.lesson_plan
+            FROM attendance a
+            JOIN students s ON a.ht_number = s.ht_number
+            WHERE a.date = ? AND a.period = ?
+            GROUP BY a.faculty, a.subject, s.merged_section, a.lesson_plan
+            ORDER BY time ASC
+        """
+        df = pd.read_sql_query(query, conn, params=(date, period))
+        
+        # Format the time column
+        if not df.empty:
+            df['time'] = pd.to_datetime(df['time']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        return df
+    except Exception as e:
+        st.error(f"Error fetching completed classes: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+def get_missing_attendance_sections(date, period):
+    """Get sections with missing attendance for a specific date and period"""
+    conn = sqlite3.connect('attendance.db')
+    try:
+        # Modified query to get all sections that should have attendance
+        query = """
+            WITH AllSections AS (
+                SELECT DISTINCT merged_section as Section
+                FROM students
+            ),
+            CompletedSections AS (
+                SELECT DISTINCT s2.merged_section
+                FROM attendance a
+                JOIN students s2 ON a.ht_number = s2.ht_number
+                WHERE a.date = ? 
+                AND a.period = ?
+            )
+            SELECT Section
+            FROM AllSections
+            WHERE Section NOT IN (SELECT merged_section FROM CompletedSections)
+            ORDER BY Section
+        """
+        df = pd.read_sql_query(query, conn, params=(date, period))
+        return df
+    except Exception as e:
+        st.error(f"Error fetching missing attendance sections: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+def display_daily_timetable(date_to_check):
+    """Display timetable for a specific date with all periods"""
+    for period in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
+        with st.expander(f"Period {period}", expanded=False):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("📋 Completed Classes:")
+                completed_df = get_completed_classes(date_to_check, period)
+                
+                if not completed_df.empty:
+                    # Format DataFrame for display
+                    display_df = format_attendance_df(completed_df)
+                    
+                    # Display the formatted DataFrame
                     st.dataframe(
-                        period_data[['faculty', 'subject', 'section', 'students', 'time', 'status']],
-                        hide_index=True,
-                        use_container_width=True
+                        display_df.style.format({
+                            'Time': lambda x: datetime.strptime(x, '%Y-%m-%d %H:%M:%S').strftime('%I:%M %p'),
+                            'Lesson Plan': lambda x: x[:50] + '...' if len(x) > 50 else x  # Truncate long lesson plans
+                        }).set_properties(**{
+                            'Lesson Plan': {'width': '300px'}  # Make lesson plan column wider
+                        }),
+                        hide_index=True
                     )
                 else:
                     st.info("No completed classes for this period")
             
-            with right_col:
-                # Get and show missing attendance sections
-                missing_sections = get_missing_attendance_sections(date_str, period)
-                if missing_sections:
-                    st.write("⚠️ Missing Attendance:")
-                    for section in missing_sections:
-                        st.warning(section, icon="⚠️")
+            with col2:
+                st.markdown("⚠️ Missing Attendance:")
+                missing_df = get_missing_attendance_sections(date_to_check, period)
+                if not missing_df.empty:
+                    # Create a more visually appealing display for missing sections
+                    st.markdown("""
+                        <style>
+                        .missing-section {
+
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
+                    
+                    # Display each missing section as a card
+                    for section in missing_df['Section']:
+                        st.markdown(f"""
+                            <div class="missing-section">
+                                <span style="color: #E65100;">📝 {section}</span>
+                            </div>
+                        """, unsafe_allow_html=True)
                 else:
-                    st.success("✅ All sections marked!", icon="✅")
+                    st.success("No missing attendance records")
+
+def format_attendance_df(df):
+    """Format the attendance DataFrame for display"""
+    if df.empty:
+        return df
+        
+    # Rename columns for display
+    df = df.rename(columns={
+        'faculty': 'Faculty',
+        'subject': 'Subject',
+        'section': 'Section',
+        'students': 'Total Students',
+        'present_count': 'Present',
+        'absent_count': 'Absent',
+        'time': 'Time',
+        'lesson_plan': 'Lesson Plan'
+    })
     
-    conn.close()
+    # Reorder columns without percentage columns
+    columns_order = [
+        'Faculty', 'Subject', 'Section', 'Total Students',
+        'Present', 'Absent', 'Time', 'Lesson Plan'
+    ]
+    
+    return df[columns_order]
+
+
+
+
+def get_attendance_summary(date):
+    """Get summary statistics for a specific date"""
+    conn = sqlite3.connect('attendance.db')
+    try:
+        query = """
+            SELECT 
+                COUNT(DISTINCT faculty || subject || s.merged_section || period) as total_classes,
+                COUNT(DISTINCT faculty) as faculty_count,
+                COUNT(DISTINCT s.merged_section) as sections_covered,
+                SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) as total_present,
+                SUM(CASE WHEN status = 'A' THEN 1 ELSE 0 END) as total_absent
+            FROM attendance a
+            JOIN students s ON a.ht_number = s.ht_number
+            WHERE date = ?
+        """
+        result = conn.execute(query, (date,)).fetchone()
+        return {
+            'total_classes': result[0] if result[0] else 0,
+            'faculty_count': result[1] if result[1] else 0,
+            'sections_covered': result[2] if result[2] else 0,
+            'total_present': result[3] if result[3] else 0,
+            'total_absent': result[4] if result[4] else 0
+        }
+    finally:
+        conn.close()
+
+def get_faculty_list(date):
+    """Get list of faculty who took classes on a specific date"""
+    conn = sqlite3.connect('attendance.db')
+    try:
+        query = """
+            SELECT DISTINCT faculty 
+            FROM attendance 
+            WHERE date = ?
+        """
+        faculty_list = [row[0] for row in conn.execute(query, (date,)).fetchall()]
+        return faculty_list
+    finally:
+        conn.close()
+
+def get_sections_list(date):
+    """Get list of sections that had classes on a specific date"""
+    conn = sqlite3.connect('attendance.db')
+    try:
+        query = """
+            SELECT DISTINCT s.merged_section
+            FROM attendance a
+            JOIN students s ON a.ht_number = s.ht_number
+            WHERE a.date = ?
+        """
+        sections_list = [row[0] for row in conn.execute(query, (date,)).fetchall()]
+        return sections_list
+    finally:
+        conn.close()
+
 
 
 
@@ -1488,14 +1686,11 @@ def show_class_timetable_page():
 
 
 def show_faculty_classload():
-    """Enhanced faculty classload page with worksheet capabilities"""
+    """Modified to show simplified workload summary"""
     st.subheader("Faculty Workload Dashboard")
     
     # Create tabs for different views
     tab1, tab2 = st.tabs(["📊 Overall Workload", "📝 Daily Worksheet"])
-    
-    # Single date range selector for both tabs
-    # selected_date, end_date = date_range_selector("faculty_workload")
     
     # Tab 1: Overall Workload
     with tab1:
@@ -1508,27 +1703,14 @@ def show_faculty_classload():
             )
             
             if not df.empty:
-                # Calculate summary metrics
-                total_load = df['Distributed Load'].sum()
-                unique_subjects = df['Subject'].nunique()
-                unique_sections = df['Section'].nunique()
-                
-                # Display summary metrics
+                # Display simplified summary metrics
                 st.write("### Workload Summary")
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.metric("Net Classes", f"{total_load:.2f}")
+                    st.metric("Net Classes", f"{df.net_classes:.2f}")
                 with col2:
-                    st.metric("Unique Subjects", unique_subjects)
-                with col3:
-                    st.metric("Unique Sections", unique_sections)
-                
-                # Subject-wise distribution
-                st.write("### Subject-wise Distribution")
-                subject_dist = df.groupby('Subject')['Distributed Load'].sum().reset_index()
-                subject_dist = subject_dist.sort_values('Distributed Load', ascending=False)
-                st.bar_chart(subject_dist.set_index('Subject'))
+                    st.metric("Other Activities", f"{df.other_activities:.2f}")
                 
                 # Detailed workload table
                 st.write("### Detailed Workload Report")
@@ -1555,18 +1737,12 @@ def show_faculty_classload():
                     # Write summary sheet
                     summary_df = pd.DataFrame([{
                         'Metric': 'Net Classes',
-                        'Value': total_load
+                        'Value': df.net_classes
                     }, {
-                        'Metric': 'Unique Subjects',
-                        'Value': unique_subjects
-                    }, {
-                        'Metric': 'Unique Sections',
-                        'Value': unique_sections
+                        'Metric': 'Other Activities',
+                        'Value': df.other_activities
                     }])
                     summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                    
-                    # Write subject distribution
-                    subject_dist.to_excel(writer, sheet_name='Subject Distribution', index=False)
                 
                 st.download_button(
                     label="📥 Download Complete Report",
@@ -1576,7 +1752,6 @@ def show_faculty_classload():
                 )
             else:
                 st.info("No workload data found for the selected date range")
-    
     # Tab 2: Daily Worksheet
     with tab2:
         selected_date, end_date = date_range_selector("faculty_worksheet1")
@@ -2647,7 +2822,7 @@ def view_faculty_worksheet_stats():
 
 
 def update_faculty_worksheet(username, date, period, activity_type, description):
-    """Update faculty worksheet with enhanced error handling and proper data saving"""
+    """Update faculty worksheet with proper IST timestamp handling"""
     try:
         conn = sqlite3.connect('attendance.db')
         cursor = conn.cursor()
@@ -2665,6 +2840,11 @@ def update_faculty_worksheet(username, date, period, activity_type, description)
         if isinstance(date, datetime):
             date = date.strftime('%Y-%m-%d')
             
+        # Get current time in IST
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time_ist = datetime.now(ist)
+        current_time_str = current_time_ist.strftime('%Y-%m-%d %H:%M:%S')
+        
         # Check if worksheet entry exists
         cursor.execute("""
             SELECT id FROM faculty_worksheet 
@@ -2672,8 +2852,6 @@ def update_faculty_worksheet(username, date, period, activity_type, description)
         """, (faculty_name, date, period))
         
         existing = cursor.fetchone()
-        
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         if existing:
             # Update existing worksheet entry
@@ -2684,14 +2862,14 @@ def update_faculty_worksheet(username, date, period, activity_type, description)
                     load = 1.0,
                     created_at = ?
                 WHERE id = ?
-            """, (activity_type, description, current_time, existing[0]))
+            """, (activity_type, description, current_time_str, existing[0]))
         else:
             # Insert new worksheet entry
             cursor.execute("""
                 INSERT INTO faculty_worksheet 
                 (faculty, date, period, activity_type, description, load, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (faculty_name, date, period, activity_type, description, 1.0, current_time))
+            """, (faculty_name, date, period, activity_type, description, 1.0, current_time_str))
             
         conn.commit()
         return True
@@ -2702,6 +2880,7 @@ def update_faculty_worksheet(username, date, period, activity_type, description)
     finally:
         if 'conn' in locals():
             conn.close()
+
 
 
 
